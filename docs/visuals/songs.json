@@ -1,0 +1,41 @@
+{
+  "highest": {
+    "trackId": 1706781383,
+    "trackName": "最高到達点",
+    "artistName": "SEKAI NO OWARI",
+    "collectionName": "最高到達点 - Single",
+    "releaseDate": "2023-09-17T07:00:00Z",
+    "artworkUrl100": "https://is1-ssl.mzstatic.com/image/thumb/Music126/v4/6e/ea/e1/6eeae17e-a426-9584-b568-4b06a96513ac/23UM1IM06463.rgb.jpg/100x100bb.jpg",
+    "trackViewUrl": "https://music.apple.com/jp/album/%E6%9C%80%E9%AB%98%E5%88%B0%E9%81%94%E7%82%B9/1706781380?i=1706781383&uo=4",
+    "trackTimeMillis": 227469,
+    "artworkSource": "https://is1-ssl.mzstatic.com/image/thumb/Music126/v4/6e/ea/e1/6eeae17e-a426-9584-b568-4b06a96513ac/23UM1IM06463.rgb.jpg/1200x1200bb.jpg",
+    "metadataSource": "https://itunes.apple.com/search?term=SEKAI+NO+OWARI+%E6%9C%80%E9%AB%98%E5%88%B0%E9%81%94%E7%82%B9&entity=song&country=jp&limit=8",
+    "image": "assets/highest-cover.jpg"
+  },
+  "akari": {
+    "trackId": 1692289427,
+    "trackName": "燈",
+    "artistName": "崎山蒼志",
+    "collectionName": "燈 - EP",
+    "releaseDate": "2023-07-07T07:00:00Z",
+    "artworkUrl100": "https://is1-ssl.mzstatic.com/image/thumb/Music126/v4/a9/c5/c3/a9c5c397-ce1e-d9ce-8226-566876afe78f/4547366628203.jpg/100x100bb.jpg",
+    "trackViewUrl": "https://music.apple.com/jp/album/%E7%87%88/1692289177?i=1692289427&uo=4",
+    "trackTimeMillis": 238720,
+    "artworkSource": "https://is1-ssl.mzstatic.com/image/thumb/Music126/v4/a9/c5/c3/a9c5c397-ce1e-d9ce-8226-566876afe78f/4547366628203.jpg/1200x1200bb.jpg",
+    "metadataSource": "https://itunes.apple.com/search?term=%E5%B4%8E%E5%B1%B1%E8%92%BC%E5%BF%97+%E7%87%88&entity=song&country=jp&limit=8",
+    "image": "assets/akari-cover.jpg"
+  },
+  "nyan": {
+    "trackId": 1887785352,
+    "trackName": "イート・スリープ・エスケープ",
+    "artistName": "ano",
+    "collectionName": "猫猫吐吐 - 吐吐 -",
+    "releaseDate": "2023-12-13T08:00:00Z",
+    "artworkUrl100": "https://is1-ssl.mzstatic.com/image/thumb/Music211/v4/34/89/e3/3489e3c8-316d-de6d-106f-b09f4a3c2024/TFCC-81060WW.jpg/100x100bb.jpg",
+    "trackViewUrl": "https://music.apple.com/jp/album/%E3%82%A4%E3%83%BC%E3%83%88-%E3%82%B9%E3%83%AA%E3%83%BC%E3%83%97-%E3%82%A8%E3%82%B9%E3%82%B1%E3%83%BC%E3%83%97/1887785345?i=1887785352&uo=4",
+    "trackTimeMillis": 140211,
+    "artworkSource": "https://is1-ssl.mzstatic.com/image/thumb/Music211/v4/34/89/e3/3489e3c8-316d-de6d-106f-b09f4a3c2024/TFCC-81060WW.jpg/1200x1200bb.jpg",
+    "metadataSource": "https://itunes.apple.com/search?term=ano+%E7%8C%AB%E7%8C%AB%E5%90%90%E5%90%90&entity=song&country=jp&limit=8",
+    "image": "assets/nyan-cover.jpg"
+  }
+}

@@ -13,20 +13,6 @@ function matchesSongText(song, candidate) {
   return !song.album || !candidate.album || normalizeMetadataText(song.album) === normalizeMetadataText(candidate.album);
 }
 
-function matchesHostSong(song, current) {
-  if (!song || !current) return false;
-  const sourceRef = current.sourceRef;
-  const source = sourceRef?.kind === 'online' ? sourceRef.providerId : sourceRef?.kind || current.source;
-  const id = current.id ?? sourceRef?.mediaId;
-  if (song.source && song.source !== source) return false;
-  if (song.id != null && String(song.id) !== String(id ?? '')) return false;
-  return matchesSongText(song, {
-    title: current.title || current.name,
-    artist: current.artist || (current.artists || []).map((artist) => artist?.name).filter(Boolean).join(' / '),
-    album: current.album?.name || (typeof current.album === 'string' ? current.album : '')
-  });
-}
-
 export default function activate(folium) {
   // 导出窗口不提供播放、网络和 RPC 服务。
   if (folium.env?.context === 'export') return () => {};
@@ -91,7 +77,7 @@ export default function activate(folium) {
     const ctx = getMatchingLyricStage(state.song);
     if (ctx) {
       try {
-        const position = ctx.currentTime.get();
+        const position = ctx.lyricTime.get();
         if (Number.isFinite(position)) {
           return { lyricPosition: position, lyricRate: ctx.isPaused() ? 0 : 1 };
         }
@@ -224,27 +210,10 @@ export default function activate(folium) {
     let publishTime = cached?.publishTime !== '未知发行时间' ? cached?.publishTime || '' : '';
     let coverUrl = cached?.coverUrl || '';
 
-    // 途径 A：从宿主内部 Zustand Store（folium.internals）同步直接提取
+    // Public song details use the session ref and do not make a network request.
     try {
-      if (folium.internals && folium.internals.stores && folium.internals.stores.playback) {
-        const storeState = folium.internals.stores.playback.getState();
-        const current = storeState.currentSong;
-        if (matchesHostSong(song, current)) {
-          if (!album && current.album && current.album.name) {
-            album = current.album.name;
-          }
-          if (current.album && current.album.coverUrl) {
-            coverUrl = current.album.coverUrl;
-          }
-          const rawTime = current.album?.publishedAt || current.publishTime;
-          if (rawTime) {
-            const d = new Date(rawTime);
-            if (!isNaN(d.getTime())) {
-              publishTime = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-            }
-          }
-        }
-      }
+      const details = folium.omni.describeSong(song);
+      if (details?.coverUrl) coverUrl = details.coverUrl;
     } catch (e) {}
 
     // The public stage cover includes local/cached assets and transition covers.
@@ -547,14 +516,14 @@ export default function activate(folium) {
   if (folium.registries.stageLayers?.register) {
     lyricStageHandle = folium.registries.stageLayers.register({
       id: 'widget-lyric-clock',
-      // The app overlay stays mounted on Folia 0.7.9's home/player/Lattice views.
+      // The app overlay stays mounted independently of the current player view.
       slot: 'app.overlay',
       interactive: false,
       mount: (_container, ctx) => {
         if (isDisposed || ctx.staticMode || ctx.isPreview) return () => {};
         const stage = { ctx };
         lyricStage = stage;
-        const unsubscribe = ctx.subscribe(() => {
+        const unsubscribe = ctx.onChange(() => {
           if (!isDisposed && lyricStage === stage) pushCurrentState(false);
         });
         const release = () => {
@@ -573,7 +542,7 @@ export default function activate(folium) {
   }
 
   // 7. 在 Folia 播放条右侧增加【悬浮小组件】快捷打开按钮
-  folium.registries.controlButtons.register({
+  folium.registries.progressButtons.register({
     id: 'toggle-enhanced-widget-btn',
     slot: 'progress.trailing',
     order: 480,

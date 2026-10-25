@@ -657,7 +657,7 @@ module.exports = function activate(api) {
   }, 300);
 
   // 3. 模组停用时优雅释放
-  api.lifecycle.onDeactivate(() => {
+  api.onDispose(() => {
     isDisposed = true;
     visibility.dispose();
     stopBoundsAnimation();

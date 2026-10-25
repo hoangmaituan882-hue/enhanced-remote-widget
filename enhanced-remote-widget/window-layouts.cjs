@@ -86,8 +86,8 @@ module.exports = function createWindowLayouts(api, screen) {
       y: primary.y + primary.height - firstSize.height - 32
     };
     const [legacy, saved] = await Promise.allSettled([
-      Promise.resolve().then(() => api.storage.data.get('widget_bounds')),
-      Promise.resolve().then(() => api.storage.data.get('widget_layouts'))
+      Promise.resolve().then(() => api.storage.get('widget_bounds')),
+      Promise.resolve().then(() => api.storage.get('widget_layouts'))
     ]);
     if (legacy.status === 'fulfilled') {
       const value = legacy.value;
@@ -133,8 +133,8 @@ module.exports = function createWindowLayouts(api, screen) {
     const snapshot = pending;
     pending = null;
     writes = writes.then(async () => {
-      await api.storage.data.set('widget_bounds', snapshot.bounds);
-      await api.storage.data.set('widget_layouts', { activeLayout: snapshot.activeLayout, profiles: snapshot.profiles });
+      await api.storage.set('widget_bounds', snapshot.bounds);
+      await api.storage.set('widget_layouts', { activeLayout: snapshot.activeLayout, profiles: snapshot.profiles });
     }).catch(error => {
       lastSaved = '';
       api.log.warn('保存布局位置失败: ' + error.message);
