@@ -21,6 +21,19 @@ sheet.setAttribute('aria-hidden', 'false');
 sheet.setAttribute('aria-modal', 'false');
 
 const send = (type, value) => ipcRenderer.send('widget-settings-action', { type, value });
+const fontSelect = $('lyric-font-family');
+// 系统字体列表由主进程读取；等回包再填选项，当前值不在列表里时补一项避免被清空。
+function populateFontList(fonts) {
+  if (!fontSelect) return;
+  const current = snapshot?.lyricStyle?.fontFamily || fontSelect.value || '';
+  const names = Array.isArray(fonts) ? fonts.filter(name => typeof name === 'string' && name.trim()).map(name => name.trim()) : [];
+  const values = [...new Set(['', ...names])];
+  if (current && !values.includes(current)) values.push(current);
+  fontSelect.replaceChildren(...values.map(value => new Option(value || '等线 Light（默认）', value)));
+  fontSelect.value = current;
+}
+ipcRenderer.on('widget-fonts', (_event, fonts) => populateFontList(fonts));
+ipcRenderer.send('widget-fonts-request');
 const wheelSelect = createMotionSelect($('wheel-behavior'), {
   descriptions: { volume: '向上增大 5% · 向下减小 5%', seek: '向上快进 5 秒 · 向下后退 5 秒', track: '向上上一首 · 向下下一首' },
   icons: {
@@ -97,6 +110,11 @@ function renderLyricStyle(value) {
   $('lyric-style-preset').value = lyricStylePreset(style);
   $('lyric-rendering').value = style.rendering;
   $('lyric-stroke-width').value = String(style.strokeWidth);
+  const family = style.fontFamily || '';
+  if (family && ![...fontSelect.options].some(option => option.value === family)) {
+    fontSelect.add(new Option(family + '（当前设置）', family));
+  }
+  if (fontSelect !== document.activeElement) fontSelect.value = family;
   $('lyric-background-opacity').value = String(style.backgroundOpacity);
   $('lyric-opacity-value').textContent = style.backgroundOpacity + '%';
   $('lyric-background-opacity').setAttribute('aria-valuetext', style.backgroundOpacity + '%');
@@ -261,11 +279,12 @@ function render(state) {
   $('lines-picker').closest('.row').hidden = state.layout !== 'lyrics';
   $('font-picker').closest('.row').hidden = state.layout === 'circuit';
   $('set-badges').closest('.row').hidden = state.layout === 'circuit';
+  $('set-lyric-click-through').disabled = state.layout !== 'lyrics';
   for (const [id, name] of [
     ['set-lock', 'isLocked'], ['set-immersive', 'isImmersive'],
     ['set-auto-shrink', 'autoHideWhenPaused'],
-    ['set-song-toast', 'songToast'], ['set-edge-dock', 'edgeDock'],
-    ['set-karaoke', 'wordKaraoke'], ['set-lyric-translation', 'showLyricTranslation'], ['set-lyric-toolbar', 'showLyricToolbar'], ['set-badges', 'showBadges']
+    ['set-song-toast', 'songToast'], ['set-song-transition', 'songTransition'], ['set-lyric-transition', 'lyricTransition'], ['set-edge-dock', 'edgeDock'],
+    ['set-karaoke', 'wordKaraoke'], ['set-lyric-translation', 'showLyricTranslation'], ['set-lyric-toolbar', 'showLyricToolbar'], ['set-lyric-click-through', 'lyricClickThrough'], ['set-badges', 'showBadges']
   ]) $(id).checked = Boolean(state[name]);
   offsetRange.value = String(state.lyricOffsetMs);
   const seconds = Math.abs(state.lyricOffsetMs / 1000).toFixed(2);
@@ -290,10 +309,11 @@ $('wheel-behavior').addEventListener('change', event => {
 const sendLyricStyle = patch => send('lyric-style', patch);
 $('lyric-style-preset').addEventListener('change', event => {
   const preset = LYRIC_STYLE_PRESETS[event.target.value];
-  if (preset) sendLyricStyle({ ...preset.values, rendering: snapshot?.lyricStyle?.rendering || 'grayscale', fontWeight: snapshot?.lyricStyle?.fontWeight || 400 });
+  if (preset) sendLyricStyle({ ...preset.values, rendering: snapshot?.lyricStyle?.rendering || 'grayscale', fontWeight: snapshot?.lyricStyle?.fontWeight || 400, fontFamily: snapshot?.lyricStyle?.fontFamily || '' });
 });
 $('lyric-rendering').addEventListener('change', event => sendLyricStyle({ rendering: event.target.value }));
 $('lyric-stroke-width').addEventListener('change', event => sendLyricStyle({ strokeWidth: Number(event.target.value) }));
+$('lyric-font-family').addEventListener('change', event => sendLyricStyle({ fontFamily: event.target.value }));
 $('lyric-background-opacity').addEventListener('input', event => sendLyricStyle({ backgroundOpacity: Number(event.target.value) }));
 $('lyric-weight-picker').addEventListener('click', event => {
   const button = event.target.closest('[data-weight]');
@@ -375,8 +395,7 @@ sizePicker.addEventListener('click', event => {
 });
 $('btn-size-reset').addEventListener('click', () => {
   if (!snapshot) return;
-  const [width, height] = recommendedSize(snapshot.layout, snapshot.windowWorkArea);
-  send('size', { width, height });
+  send('window-reset', 'size');
 });
 for (const [picker, name, attribute, transform] of [
   ['font-picker', 'font', 'size', String],
@@ -389,13 +408,15 @@ for (const [picker, name, attribute, transform] of [
 for (const [id, name] of [
   ['set-lock', 'isLocked'], ['set-immersive', 'isImmersive'],
   ['set-auto-shrink', 'autoHideWhenPaused'],
-  ['set-song-toast', 'songToast'], ['set-edge-dock', 'edgeDock'],
-  ['set-karaoke', 'wordKaraoke'], ['set-lyric-translation', 'showLyricTranslation'], ['set-lyric-toolbar', 'showLyricToolbar'], ['set-badges', 'showBadges']
+  ['set-song-toast', 'songToast'], ['set-song-transition', 'songTransition'], ['set-lyric-transition', 'lyricTransition'], ['set-edge-dock', 'edgeDock'],
+  ['set-karaoke', 'wordKaraoke'], ['set-lyric-translation', 'showLyricTranslation'], ['set-lyric-toolbar', 'showLyricToolbar'], ['set-lyric-click-through', 'lyricClickThrough'], ['set-badges', 'showBadges']
 ]) $(id).addEventListener('change', event => send('option', { name, value: event.target.checked }));
 offsetRange.addEventListener('input', event => send('offset', Number(event.target.value)));
 $('offset-earlier').addEventListener('click', () => { if (snapshot) send('offset', snapshot.lyricOffsetMs + 100); });
 $('offset-later').addEventListener('click', () => { if (snapshot) send('offset', snapshot.lyricOffsetMs - 100); });
 $('offset-reset').addEventListener('click', () => send('offset', 0));
+$('btn-position-reset').addEventListener('click', () => send('window-reset', 'position'));
+$('btn-recover-interaction').addEventListener('click', () => send('recover-interaction'));
 $('btn-sheet-done').addEventListener('click', () => ipcRenderer.send('widget-settings-close'));
 window.addEventListener('keydown', event => {
   if (event.key === 'Escape' && !event.defaultPrevented) ipcRenderer.send('widget-settings-close');

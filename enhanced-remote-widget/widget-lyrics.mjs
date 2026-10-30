@@ -1,6 +1,8 @@
 import { formatTime } from './widget-state.mjs';
 import { createLyricCanvas } from './widget-lyric-canvas.mjs';
 import { getLineTranslation } from './lyric-translation.mjs';
+import { createLyricClockGuard } from './lyric-clock.mjs';
+import { createLyricMotionController } from './widget-motion.mjs';
 export function createLyricsRenderer({ elements, state, titleSlot, artistSlot, onMeasure, onContentChange }) {
   const { card, karaokeViewport, karaokeLine, karaokeNext, karaokeTranslation, timeCurrent, timeDuration, trackFill, posterLine1, posterLine2, posterTime, posterTranslation } = elements;
   let lyricsData = null, fallbackLyric = '', lineKey = '';
@@ -10,6 +12,8 @@ export function createLyricsRenderer({ elements, state, titleSlot, artistSlot, o
   let viewportWidth = 0, maxScroll = 0, wordCenters = [], scrollX = 0;
   let syncPosition = 0, syncPerfTime = performance.now(), renderedTime = 0;
   let lyricPosition = null, lyricPerfTime = syncPerfTime, lyricRate = 0;
+  const lyricClockGuard = createLyricClockGuard();
+  let seekRevision = null;
   let songKey = null, previousPlaying = false, disposed = false, measureRequest = 0;
   let visibilityDirty = true;
   let surfaces = { karaoke: false, poster: false, progress: false, posterTime: false };
@@ -22,6 +26,18 @@ export function createLyricsRenderer({ elements, state, titleSlot, artistSlot, o
   karaokeTranslation.appendChild(translationText);
   let translationValue = '';
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  let previousLyricTime = null, previousLyricFrame = null;
+  const canAnimateLine = () => state.lyricTransition !== false &&
+    state.connectionStatus === 'connected' && !state.isScrubbing && !document.hidden && !reduced.matches &&
+    !card.matches('.has-overlay, .is-dragging, .is-resizing, .is-window-animating, .is-circuit-editing') &&
+    !card.querySelector('.song-transition-layer') && !concealed();
+  const lineMotion = createLyricMotionController(card, canAnimateLine);
+  function stopTransition() {
+    previousLyricTime = previousLyricFrame = null;
+    lineMotion.stop();
+  }
+  reduced.addEventListener('change', stopTransition);
+  window.addEventListener('resize', stopTransition);
   let pixelRatio = window.devicePixelRatio || 1, resolutionQuery = null;
   function themeColors() {
     if (cachedThemeColors) return cachedThemeColors;
@@ -80,12 +96,6 @@ export function createLyricsRenderer({ elements, state, titleSlot, artistSlot, o
       nextTextNode.className = 'lyric-next-text';
       nextTextNode.textContent = value;
       karaokeNext.appendChild(nextTextNode);
-      if (state.layout === 'lyrics' && !reduced.matches) {
-        karaokeNext.animate?.([
-          { opacity: 0, transform: 'translateY(3px)' },
-          { opacity: 1, transform: 'none' }
-        ], { duration: 180, easing: 'ease-out' });
-      }
     }
     scheduleMeasure();
   }
@@ -138,7 +148,8 @@ export function createLyricsRenderer({ elements, state, titleSlot, artistSlot, o
     const elapsed = lyricPosition === null ? 0 : Math.max(0, performance.now() - lyricPerfTime) / 1000;
     // The host's lyric clock includes its own offset and lyrics-only stages.
     // Audio duration must not truncate it; the mod's offset remains independent.
-    return (lyricPosition === null ? audioTime : lyricPosition + elapsed * lyricRate) + state.lyricOffsetMs / 1000;
+    const time = (lyricPosition === null ? audioTime : lyricPosition + elapsed * lyricRate) + state.lyricOffsetMs / 1000;
+    return lyricClockGuard.read(time, lyricPosition === null ? state.isPlaying : lyricRate > 0);
   }
 
   function visible(node) {
@@ -149,21 +160,26 @@ export function createLyricsRenderer({ elements, state, titleSlot, artistSlot, o
     return style.display !== 'none' && style.visibility !== 'hidden';
   }
 
+  function concealed() {
+    return document.hidden || document.body.classList.contains('widget-auto-hiding') ||
+      (card.classList.contains('is-edge-docked') && !card.classList.contains('is-peeking'));
+  }
+
   function refreshSurfaces() {
     visibilityDirty = false;
-    const concealed = document.hidden || document.body.classList.contains('widget-auto-hiding') ||
-      (card.classList.contains('is-edge-docked') && !card.classList.contains('is-peeking'));
-    const karaoke = !concealed && state.layout !== 'circuit' && state.layout !== 'poster' && visible(karaokeViewport);
-    const poster = !concealed && state.layout === 'poster' && visible(posterLine1);
+    const hidden = concealed();
+    const karaoke = !hidden && state.layout !== 'circuit' && state.layout !== 'poster' && visible(karaokeViewport);
+    const poster = !hidden && state.layout === 'poster' && visible(posterLine1);
+    if (surfaces.karaoke !== karaoke || surfaces.poster !== poster) stopTransition();
     surfaces = {
       karaoke, poster,
-      progress: !concealed && state.layout !== 'circuit' && visible(trackFill.parentElement),
-      posterTime: !concealed && state.layout === 'poster' && visible(posterTime)
+      progress: !hidden && state.layout !== 'circuit' && visible(trackFill.parentElement),
+      posterTime: !hidden && state.layout === 'poster' && visible(posterTime)
     };
   }
 
   function needsContinuousFrames() {
-    const advancingLyrics = lyricPosition === null ? state.isPlaying : lyricRate > 0;
+    const advancingLyrics = state.connectionStatus === 'connected' && (lyricPosition === null ? state.isPlaying : lyricRate > 0);
     const timedLyrics = Boolean(lyricsData?.lines.length);
     return (advancingLyrics && timedLyrics && (surfaces.karaoke || surfaces.poster)) ||
       (state.isPlaying && state.currentDuration > 0 && (surfaces.progress || surfaces.posterTime));
@@ -278,7 +294,6 @@ export function createLyricsRenderer({ elements, state, titleSlot, artistSlot, o
     }
 
     scheduleMeasure();
-    // 重建的子节点自行入场，避免为重启动画强制整窗重排。
   }
 
   function requestFrame() {
@@ -298,16 +313,29 @@ export function createLyricsRenderer({ elements, state, titleSlot, artistSlot, o
     const audioTime = getTime();
     const time = getLyricTime(audioTime);
     const { active, base } = themeColors();
+    let transitionPrepared = false;
 
     if ((surfaces.karaoke || surfaces.poster) && lyricsData && Array.isArray(lyricsData.lines) && lyricsData.lines.length) {
       const disp = resolveDisplay(lyricsData, time);
       const key = keyOf(disp.currentLine);
-      display = disp;
       if (key !== lineKey) {
+        // Only a continuously observed, adjacent timed line may animate. Seeks,
+        // first paint and throttled/background frames must show the real position immediately.
+        const natural = previousLyricTime !== null && previousLyricFrame !== null &&
+          timestamp > previousLyricFrame && timestamp - previousLyricFrame <= 250 &&
+          time >= previousLyricTime && time - previousLyricTime <= 0.5 &&
+          (lyricPosition === null ? state.isPlaying : lyricRate > 0) &&
+          display.currentLine && disp.currentLine && disp.currentLine === display.nextLine &&
+          previousLyricTime < disp.currentLine.startTime && time >= disp.currentLine.startTime;
+        if (natural) transitionPrepared = lineMotion.prepare(surfaces.poster
+          ? [posterLine1, posterTranslation, posterLine2]
+          : [karaokeViewport, karaokeTranslation, karaokeNext]);
+        else stopTransition();
         lineKey = key;
         renderLine(disp.currentLine);
         renderNextLine(disp.nextLine ? disp.nextLine.fullText : '');
       }
+      display = disp;
       renderTranslation(disp.currentLine);
 
       if (state.wordKaraoke && currentWords && currentWords.length) {
@@ -370,12 +398,18 @@ export function createLyricsRenderer({ elements, state, titleSlot, artistSlot, o
     }
 
     if (surfaces.poster || surfaces.posterTime) updatePosterLyrics(audioTime);
+    if (transitionPrepared) lineMotion.commit();
+    if (surfaces.karaoke || surfaces.poster) {
+      previousLyricTime = time;
+      previousLyricFrame = timestamp;
+    } else stopTransition();
 
     if (needsContinuousFrames()) requestFrame();
   }
   requestFrame();
 
   function handleVisibility() {
+    stopTransition();
     visibilityDirty = true;
     if (document.hidden && frameRequest) {
       cancelAnimationFrame(frameRequest);
@@ -390,6 +424,7 @@ export function createLyricsRenderer({ elements, state, titleSlot, artistSlot, o
   const VisibilityObserver = window.MutationObserver;
   const visibilityObserver = VisibilityObserver ? new VisibilityObserver(() => {
     visibilityDirty = true;
+    if (!canAnimateLine()) stopTransition();
     requestFrame();
   }) : null;
   visibilityObserver?.observe(card, { attributes: true, attributeFilter: ['class', 'hidden'] });
@@ -479,6 +514,13 @@ export function createLyricsRenderer({ elements, state, titleSlot, artistSlot, o
 
   function update(data) {
     const changedSong = Object.prototype.hasOwnProperty.call(data, 'songKey') && songKey !== data.songKey;
+    if (changedSong || previousPlaying !== state.isPlaying ||
+        (Object.prototype.hasOwnProperty.call(data, 'lyricSeekRevision') && data.lyricSeekRevision !== seekRevision) ||
+        (Object.prototype.hasOwnProperty.call(data, 'lyricRate') && (data.lyricRate === 1 ? 1 : 0) !== lyricRate)) {
+      lyricClockGuard.reset();
+      stopTransition();
+    }
+    if (Object.prototype.hasOwnProperty.call(data, 'lyricSeekRevision')) seekRevision = data.lyricSeekRevision;
     if (changedSong) {
       songKey = data.songKey;
       lyricPosition = null;
@@ -487,6 +529,7 @@ export function createLyricsRenderer({ elements, state, titleSlot, artistSlot, o
       renderTranslation(null);
     }
     if (changedSong || Object.prototype.hasOwnProperty.call(data, 'lyrics')) {
+      stopTransition();
       lyricsData = data.lyrics && Array.isArray(data.lyrics.lines) ? data.lyrics : null;
       lineKey = '';
       display = { currentLine: null, nextLine: null };
@@ -499,7 +542,7 @@ export function createLyricsRenderer({ elements, state, titleSlot, artistSlot, o
     }
     if (Object.prototype.hasOwnProperty.call(data, 'lyricPosition')) {
       lyricPosition = Number.isFinite(data.lyricPosition) ? data.lyricPosition : null;
-      lyricRate = data.lyricRate === 1 ? 1 : 0;
+      lyricRate = state.connectionStatus === 'connected' && data.lyricRate === 1 ? 1 : 0;
       lyricPerfTime = performance.now();
     }
     if (!state.isScrubbing) {
@@ -517,6 +560,7 @@ export function createLyricsRenderer({ elements, state, titleSlot, artistSlot, o
     requestFrame();
   }
   function seek(position) {
+    stopTransition();
     const delta = position - (state.isPlaying ? getTime() : syncPosition);
     if (lyricPosition !== null) {
       lyricPosition = getLyricTime() - state.lyricOffsetMs / 1000 + delta;
@@ -526,9 +570,12 @@ export function createLyricsRenderer({ elements, state, titleSlot, artistSlot, o
     syncPosition = position;
     syncPerfTime = performance.now();
     renderedTime = position;
+    lyricClockGuard.reset();
     requestFrame();
   }
   function invalidate(reason) {
+    stopTransition();
+    lyricClockGuard.reset();
     if (reason === 'theme' || reason === 'layout' || reason === 'lyricStyle') cachedThemeColors = null;
     if (reason === 'theme') {
       scheduleMeasure();
@@ -543,10 +590,26 @@ export function createLyricsRenderer({ elements, state, titleSlot, artistSlot, o
     scheduleMeasure();
     requestFrame();
   }
+  function suspend() {
+    stopTransition();
+    // 停在最后可推算的位置，但不把它伪装成宿主确认的暂停或清空歌词。
+    const audioTime = getTime();
+    const lyricTime = getLyricTime(audioTime);
+    state.currentPosition = audioTime;
+    syncPosition = renderedTime = audioTime;
+    lyricPosition = lyricTime - state.lyricOffsetMs / 1000;
+    syncPerfTime = lyricPerfTime = performance.now();
+    lyricRate = 0;
+    lyricClockGuard.reset();
+    requestFrame();
+  }
   return {
-    update, seek, invalidate, requestFrame, scheduleMeasure,
+    update, seek, invalidate, requestFrame, scheduleMeasure, suspend, stopTransition,
     dispose() {
       disposed = true;
+      stopTransition();
+      reduced.removeEventListener('change', stopTransition);
+      window.removeEventListener('resize', stopTransition);
       if (frameRequest) cancelAnimationFrame(frameRequest);
       if (measureRequest) cancelAnimationFrame(measureRequest);
       document.removeEventListener('visibilitychange', handleVisibility);

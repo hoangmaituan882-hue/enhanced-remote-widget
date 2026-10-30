@@ -3,6 +3,7 @@
 'use strict';
 import { createVolumeController } from './client-volume.mjs';
 import { getLineTranslation } from './lyric-translation.mjs';
+import { createSampledLyricClock } from './sampled-lyric-clock.mjs';
 
 const normalizeMetadataText = (text) => String(text || '').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
 
@@ -17,12 +18,19 @@ export default function activate(folium) {
   // 导出窗口不提供播放、网络和 RPC 服务。
   if (folium.env?.context === 'export') return () => {};
   let isDisposed = false;
+  let lyricSeekRevision = 0;
+  const sampledLyricClock = createSampledLyricClock();
   const volume = createVolumeController(folium, () => !isDisposed);
   const metadataCache = new Map();
   let currentLyricsData = null;
   let lyricsSongKey = null;
   let activeSongKey = '';
-  let playbackReady = false;
+  let playbackReady = null;
+  let connectionRevision = 0;
+  let syncErrorReported = false;
+  let syncAttempt = 0;
+  let lastSuccessfulSync = 0;
+  let actionWait = null;
   let actionLoopStarted = false;
   let songGeneration = 0;
   let snapshotPending = false;
@@ -35,9 +43,14 @@ export default function activate(folium) {
       return folium.playback.getState();
     } catch (error) {
       // 壁纸切换会重建主窗口；客户端激活时播放桥接可能尚未挂载。
-      // 返回未就绪，不发送空状态，后续同步会自动恢复。
+      // 只报告连接状态，不用空歌曲覆盖已展示的内容。
       if (error?.message !== 'playback-unavailable-in-main-context') throw error;
-      playbackReady = false;
+      if (playbackReady !== false) {
+        playbackReady = false;
+        connectionRevision++;
+        sampledLyricClock.reset();
+        void folium.rpc.call('syncState', { connectionStatus: 'unavailable' }).catch(() => {});
+      }
       return null;
     }
   }
@@ -79,15 +92,39 @@ export default function activate(folium) {
       try {
         const position = ctx.lyricTime.get();
         if (Number.isFinite(position)) {
-          return { lyricPosition: position, lyricRate: ctx.isPaused() ? 0 : 1 };
+          const rate = ctx.isPaused() ? 0 : 1;
+          return {
+            lyricPosition: sampledLyricClock.read(position, rate, JSON.stringify([getSongKey(state.song), lyricSeekRevision])),
+            lyricRate: rate
+          };
         }
       } catch {}
     }
+    sampledLyricClock.reset();
     return { lyricPosition: null, lyricRate: state.state === 'playing' ? 1 : 0 };
+  }
+
+  function reportSyncFailure(error, revision, attempt) {
+    // 已确认的新消息优先于迟到的旧请求失败，不能把已恢复的连接再次判为断开。
+    if (isDisposed || revision !== connectionRevision || attempt < lastSuccessfulSync) return;
+    if (playbackReady !== false) connectionRevision++;
+    playbackReady = false;
+    if (!syncErrorReported) {
+      syncErrorReported = true;
+      folium.log.warn('小组件状态同步中断，等待恢复: ' + error.message);
+    }
+  }
+
+  function waitForActions(ms) {
+    return new Promise(resolve => {
+      actionWait = { resolve, timer: setTimeout(() => { actionWait = null; resolve(); }, ms) };
+    });
   }
 
   function pushClockState(state) {
     if (isDisposed || !state) return;
+    const revision = connectionRevision;
+    const attempt = ++syncAttempt;
     const clock = readLyricClock(state);
     folium.rpc.call('syncState', {
       songKey: getSongKey(state.song),
@@ -95,8 +132,11 @@ export default function activate(folium) {
       duration: state.duration,
       state: state.state,
       ...clock,
+      lyricSeekRevision,
       currentLyric: getActiveLyricText(clock.lyricPosition ?? state.position)
-    }).catch(() => {});
+    }).then(() => {
+      if (!isDisposed && revision === connectionRevision) lastSuccessfulSync = Math.max(lastSuccessfulSync, attempt);
+    }).catch(error => reportSyncFailure(error, revision, attempt));
   }
 
   function cacheMetadata(key, value) {
@@ -329,6 +369,8 @@ export default function activate(folium) {
 
   async function pushCurrentState(forceIncludeLyrics = false) {
     if (isDisposed) return;
+    const revision = connectionRevision;
+    const attempt = ++syncAttempt;
     try {
       const state = readPlaybackState();
       if (!state) return;
@@ -337,10 +379,6 @@ export default function activate(folium) {
       const lyricClock = readLyricClock(state);
       const songKey = getSongKey(state.song);
       const isSongChanged = songKey !== lastPushedSongKey;
-      if (isSongChanged) {
-        lastPushedSongKey = songKey;
-      }
-
       const payload = {
         songKey,
         // ref 只在当前宿主会话有效；歌词偏移使用可跨重启的歌曲标识。
@@ -356,6 +394,7 @@ export default function activate(folium) {
         duration: state.duration,
         state: state.state,
         ...lyricClock,
+        lyricSeekRevision,
         liked: Boolean(state.liked),
         canLike: state.canLike !== false && Boolean(state.song),
         currentLyric: getActiveLyricText(lyricClock.lyricPosition ?? state.position)
@@ -367,20 +406,32 @@ export default function activate(folium) {
       }
 
       await folium.rpc.call('syncState', payload);
+      if (isDisposed || revision !== connectionRevision || attempt < lastSuccessfulSync) return;
+      lastSuccessfulSync = attempt;
+      lastPushedSongKey = songKey;
+      playbackReady = true;
+      syncErrorReported = false;
       recoverLyrics();
-    } catch (e) {
-      folium.log.error('推送状态至悬浮小组件出错: ' + e.message);
+    } catch (error) {
+      reportSyncFailure(error, revision, attempt);
     }
   }
+
+  // 渲染端重载后只能拿到不含歌词的增量状态；按请求补发一次带歌词的全量快照。
+  const unsubRequestState = typeof folium.rpc?.on === 'function'
+    ? folium.rpc.on('request-state', () => { void pushCurrentState(true); }) : () => {};
 
   // 5. 按顺序执行来自悬浮小组件的控制指令。
   async function startActionLoop() {
     while (!isDisposed) {
       try {
-        if (!readPlaybackState()) {
-          await new Promise((resolve) => setTimeout(resolve, 300));
+        const polledState = readPlaybackState();
+        if (!polledState || playbackReady !== true) {
+          await waitForActions(300);
           continue;
         }
+        const revision = connectionRevision;
+        const polledSongKey = getSongKey(polledState.song);
         let actions = null;
         try {
           actions = await folium.rpc.call('pollActions');
@@ -393,18 +444,17 @@ export default function activate(folium) {
         const list = Array.isArray(actions) ? actions : actions ? [actions] : [];
         if (list.length === 0) {
           // 宿主重载期间可能立即返回空队列，避免无等待的 RPC 循环占满线程。
-          await new Promise((resolve) => setTimeout(resolve, 100));
+          await waitForActions(100);
           continue;
         }
 
         let needsStatePush = false;
         for (const action of list) {
           if (!action || !action.action) continue;
-          // 长轮询返回期间桥接也可能卸载；保留已取出的操作，等它恢复后再执行。
-          while (!isDisposed && !readPlaybackState()) {
-            await new Promise((resolve) => setTimeout(resolve, 300));
-          }
-          if (isDisposed) break;
+          // 断连前取出的操作不延迟重放；旧歌曲的 seek 也不能落到新歌曲上。
+          const current = readPlaybackState();
+          if (isDisposed || !current || playbackReady !== true || revision !== connectionRevision) break;
+          if (action.action === 'seek' && (typeof action.songKey === 'string' ? action.songKey : polledSongKey) !== getSongKey(current.song)) continue;
           try {
             switch (action.action) {
               case 'play':
@@ -467,7 +517,7 @@ export default function activate(folium) {
         }
       } catch (err) {
         if (isDisposed) break;
-        await new Promise((r) => setTimeout(r, 200));
+        await waitForActions(200);
       }
     }
   }
@@ -487,7 +537,10 @@ export default function activate(folium) {
   });
   const unsubSong = folium.events.on('playback.songChanged', () => pushCurrentState());
   const unsubState = folium.events.on('playback.stateChanged', () => pushCurrentState());
-  const unsubSeek = folium.events.on('playback.seeked', () => pushCurrentState());
+  const unsubSeek = folium.events.on('playback.seeked', () => {
+    lyricSeekRevision++;
+    pushCurrentState();
+  });
   const unsubLike = typeof folium.playback.toggleLike === 'function'
     ? folium.events.on('playback.likeChanged', () => pushCurrentState()) : () => {};
 
@@ -501,9 +554,9 @@ export default function activate(folium) {
       startActionLoop();
     }
     if (!playbackReady || getSongKey(state.song) !== activeSongKey) {
-      playbackReady = true;
       pushCurrentState(true);
-    } else if (state.state === 'playing' || lyricStage) {
+    } else {
+      // 暂停和无歌曲也发送心跳；没有更新不等于暂停或停止。
       pushClockState(state);
     }
     recoverLyrics();
@@ -585,6 +638,22 @@ export default function activate(folium) {
     }
   });
 
+  // 恢复入口在宿主命令面板中，独立于小组件是否穿透、锁定或隐藏。
+  folium.registries.commands.register({
+    id: 'recover-widget-cmd',
+    label: { 'zh-CN': '恢复小组件显示与交互', en: 'Recover Widget Visibility and Interaction' },
+    description: { 'zh-CN': '显示小组件并关闭点击穿透、位置锁定与贴边收起，保留外观和歌词设置。', en: 'Show the widget and release click-through, position lock and edge docking without resetting appearance.' },
+    keywords: ['widget', '恢复', '解锁', '穿透', '找回', '歌词'],
+    globalShortcut: true,
+    run: () => folium.rpc.call('recoverWidget')
+  });
+  folium.registries.commands.register({
+    id: 'open-widget-settings-cmd',
+    label: { 'zh-CN': '打开小组件偏好设置', en: 'Open Widget Preferences' },
+    keywords: ['widget', '小组件', '设置', 'preferences'],
+    run: () => folium.rpc.call('openWidgetSettings')
+  });
+
   // 启动主轮询与初次状态推送
   syncPlayback();
 
@@ -592,6 +661,12 @@ export default function activate(folium) {
   return () => {
     isDisposed = true;
     clearInterval(timer);
+    if (actionWait) {
+      clearTimeout(actionWait.timer);
+      actionWait.resolve();
+      actionWait = null;
+    }
+    unsubRequestState();
     metadataCache.clear();
     inFlightEnrichments.clear();
     currentLyricsData = null;

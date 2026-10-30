@@ -74,6 +74,28 @@
   --tt-shadow: 0 4px 16px rgba(0, 0, 0, 0.12), 0 0 0 1px var(--tt-border);
 }
 
+/* 连接提示只覆盖内容，不参与卡片排版或改变原生窗口尺寸。 */
+.connection-status:not([hidden]) {
+  position: absolute;
+  z-index: 30;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  max-height: calc(100% - 16px);
+  overflow: hidden;
+  padding: 6px 8px;
+  border: 1px solid #ffffff30;
+  border-radius: 8px;
+  background: #252529;
+  color: #f5f5f7;
+  font: 500 12px/1.4 var(--font);
+  text-align: center;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+.is-disconnected .progress { opacity: .45; }
+.is-disconnected button:disabled { cursor: default; }
+
 /* ---------- 主题 1：Dark 石墨深色 (Apple macOS Dark Vibrancy) ---------- */
 .widget-card.mode-dark {
   --bg: #1c1c1e;
@@ -273,7 +295,8 @@ button {
   box-shadow: var(--card-shadow);
   display: flex;
   flex-direction: column;
-  -webkit-app-region: drag;
+  /* 原生拖拽区域会吞掉文字及空白处的单击、滚轮；平移统一由指针手势处理。 */
+  -webkit-app-region: no-drag;
   backdrop-filter: blur(28px) saturate(180%);
   -webkit-backdrop-filter: blur(28px) saturate(180%);
   transition: background var(--t-slow) var(--ease),
@@ -690,11 +713,6 @@ cube-morph-char {
   white-space: nowrap;
   will-change: transform, opacity;
 }
-@keyframes lyric-enter {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
 .karaoke-word,
 .karaoke-single {
   display: inline-block;
@@ -706,7 +724,6 @@ cube-morph-char {
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   will-change: background-image;
-  animation: lyric-enter 160ms ease-out;
 }
 .karaoke-word {
   margin-right: 0.2em;
@@ -893,10 +910,12 @@ cube-morph-char {
 /* 双面图标共用同一网格单元，短淡入淡出仅切换 opacity，
    首帧先把备用面压成透明，避免两枚图标同时出现 */
 #btn-play svg,
+#menu-play svg,
 #btn-lock svg {
   grid-area: 1 / 1;
 }
 #icon-pause,
+#menu-icon-pause,
 #icon-lock {
   opacity: 0;
 }
@@ -1478,6 +1497,30 @@ cube-morph-char {
   transition: none !important;
 }
 
+/* 换句快照固定在卡片内部，不参与排版、命中或窗口尺寸计算。 */
+.lyric-transition-layer {
+  position: absolute !important;
+  inset: 0 !important;
+  z-index: 17;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none !important;
+  -webkit-app-region: initial !important;
+}
+.lyric-transition-layer * { pointer-events: none !important; -webkit-app-region: initial !important; }
+
+/* Song snapshots stay inside the live card and cannot intercept playback or dragging. */
+.song-transition-layer {
+  position: absolute !important;
+  inset: 0 !important;
+  z-index: 18;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none !important;
+  -webkit-app-region: initial !important;
+}
+.song-transition-layer * { pointer-events: none !important; -webkit-app-region: initial !important; }
+
 /* The settings form belongs to a separate native BrowserWindow. */
 .sheet {
   position: absolute;
@@ -1775,24 +1818,30 @@ body.settings-window .sheet-body { padding: 0 var(--space-4) var(--space-4); }
   .preview-cover { width: 40px; height: 40px; }
 }
 
+/* 菜单在独立透明浮窗内排版，紧凑分组，不占用播放器的布局空间。 */
+html.menu-page body { visibility: hidden; padding: 0; background: transparent; }
+body.menu-window > :not(#menu) { display: none !important; }
+body.menu-window #menu { left: 8px !important; top: 8px !important; }
 /* Pointer-origin context menu. Closing removes the hit area immediately. */
 .menu {
   position: fixed;
   z-index: 100;
-  min-width: 216px;
+  --menu-width: 272px;
+  width: var(--menu-width);
+  min-width: min(216px, calc(100vw - 16px));
   max-width: calc(100vw - 16px);
   padding: 6px;
   border-radius: 14px;
-  background: rgba(26, 26, 34, 0.85);
+  background: rgba(29, 30, 35, 0.97);
   backdrop-filter: blur(28px) saturate(190%);
   -webkit-backdrop-filter: blur(28px) saturate(190%);
   border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35), 0 2px 10px rgba(0, 0, 0, 0.2), inset 0 0.5px 0.5px rgba(255, 255, 255, 0.2);
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.04);
   color: #f4f4f6;
   display: none;
   flex-direction: column;
-  gap: 3px;
-  font-size: var(--type-small);
+  gap: 2px;
+  font: 500 12px/1.35 "Inter", "Segoe UI", "Microsoft YaHei UI", sans-serif;
   max-height: calc(100vh - 16px);
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -1802,7 +1851,7 @@ body.settings-window .sheet-body { padding: 0 var(--space-4) var(--space-4); }
   clip-path: inset(0 round 12px);
 }
 .menu.is-open {
-  transition: clip-path 300ms var(--resize-ease), opacity 300ms var(--resize-ease);
+  transition: clip-path 150ms var(--resize-ease), opacity 120ms var(--ease);
 }
 .menu[data-modality="keyboard"] { transition: none !important; }
 .menu-active {
@@ -1839,12 +1888,12 @@ body.settings-window .sheet-body { padding: 0 var(--space-4) var(--space-4); }
 
 .menu-action-btn {
   flex: 1;
-  height: 32px;
+  height: 34px;
   border-radius: 8px;
   display: grid;
   place-items: center;
-  background: rgba(255, 255, 255, 0.07);
-  color: var(--text-2);
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
   border: none;
   cursor: pointer;
   transition: background var(--t-fast) var(--ease),
@@ -1861,6 +1910,7 @@ body.settings-window .sheet-body { padding: 0 var(--space-4) var(--space-4); }
   transform: translateY(0.5px);
 }
 .menu-action-btn svg {
+  grid-area: 1 / 1;
   width: 15px;
   height: 15px;
   stroke: currentColor;
@@ -1881,26 +1931,32 @@ body.settings-window .sheet-body { padding: 0 var(--space-4) var(--space-4); }
   stroke: #ff2d55 !important;
 }
 
-.mode-light .menu {
+.mode-light .menu,
+.mode-paper .menu {
   scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
-  background: rgba(255, 255, 255, 0.86);
+  background: rgba(250, 250, 252, 0.98);
   border-color: rgba(0, 0, 0, 0.1);
   color: #17171c;
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06), inset 0 0.5px 0.5px rgba(255, 255, 255, 0.8);
 }
-.mode-light .menu-active { background: rgba(0, 0, 0, 0.07); }
-.mode-light .menu::-webkit-scrollbar-thumb {
+.mode-light .menu-active,
+.mode-paper .menu-active { background: rgba(0, 0, 0, 0.06); }
+.mode-light .menu::-webkit-scrollbar-thumb,
+.mode-paper .menu::-webkit-scrollbar-thumb {
   background: rgba(0, 0, 0, 0.2);
 }
-.mode-light .menu-action-btn {
+.mode-light .menu-action-btn,
+.mode-paper .menu-action-btn {
   background: rgba(0, 0, 0, 0.05);
   color: #484852;
 }
-.mode-light .menu-action-btn:hover {
+.mode-light .menu-action-btn:hover,
+.mode-paper .menu-action-btn:hover {
   background: rgba(0, 0, 0, 0.1);
   color: #17171c;
 }
-.mode-light .menu-action-primary {
+.mode-light .menu-action-primary,
+.mode-paper .menu-action-primary {
   background: rgba(0, 0, 0, 0.09);
   color: #17171c;
 }
@@ -1911,9 +1967,11 @@ body.settings-window .sheet-body { padding: 0 var(--space-4) var(--space-4); }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-1);
+  gap: 8px;
+  min-height: 30px;
+  flex-shrink: 0;
   padding: 6px 8px;
-  border-radius: 8px;
+  border-radius: 7px;
   border: 0;
   width: 100%;
   background: none;
@@ -1929,13 +1987,15 @@ body.settings-window .sheet-body { padding: 0 var(--space-4) var(--space-4); }
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
-.mode-light .menu-item.is-active { color: #17171c; }
+.mode-light .menu-item.is-active,
+.mode-paper .menu-item.is-active { color: #17171c; }
 .menu-left {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
 }
+.menu-left > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .menu-left svg {
   width: 15px;
   height: 15px;
@@ -1950,15 +2010,22 @@ body.settings-window .sheet-body { padding: 0 var(--space-4) var(--space-4); }
   position: relative;
   z-index: 1;
   height: 1px;
-  margin: 3px 4px;
+  flex-shrink: 0;
+  margin: 4px 6px;
   background: rgba(255, 255, 255, 0.09);
 }
-.mode-light .menu-sep {
+.mode-light .menu-sep,
+.mode-paper .menu-sep {
   background: rgba(0, 0, 0, 0.08);
 }
 
 .menu-hint {
-  font-size: 11px;
+  flex-shrink: 0;
+  max-width: 78px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 10px;
   opacity: 0.5;
   font-variant-numeric: tabular-nums;
   font-weight: 500;
@@ -1966,7 +2033,8 @@ body.settings-window .sheet-body { padding: 0 var(--space-4) var(--space-4); }
   padding: 1px 5px;
   border-radius: 4px;
 }
-.mode-light .menu-hint {
+.mode-light .menu-hint,
+.mode-paper .menu-hint {
   background: rgba(0, 0, 0, 0.06);
 }
 .menu-item.is-active .menu-hint {
@@ -2026,6 +2094,16 @@ body.settings-window .sheet-body { padding: 0 var(--space-4) var(--space-4); }
   --text-2: var(--lyric-base);
   --text-3: var(--lyric-base);
   --accent: var(--lyric-active);
+  --lyric-toolbar-size: 36px;
+  --lyric-toolbar-padding: 3px;
+  --lyric-toolbar-offset: var(--lyric-toolbar-size);
+  /* 在原生窗口内部向上展开，底边与歌词区不动，不写入临时窗口尺寸。 */
+  height: calc(100% - var(--lyric-toolbar-offset));
+  margin-top: var(--lyric-toolbar-offset);
+  transition: height 220ms var(--ease), margin-top 220ms var(--ease),
+              opacity 180ms var(--ease), background var(--t-slow) var(--ease),
+              color var(--t-slow) var(--ease), border-color var(--t-slow) var(--ease),
+              box-shadow var(--t-slow) var(--ease);
   color: var(--lyric-base);
   background: var(--lyric-window-background, rgba(44, 44, 44, 0.76));
   border: 1px solid var(--lyric-window-border, rgba(143, 143, 143, 0.34));
@@ -2034,6 +2112,9 @@ body.settings-window .sheet-body { padding: 0 var(--space-4) var(--space-4); }
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
+.layout-lyrics.is-lyric-toolbar-open { --lyric-toolbar-offset: 0px; }
+.layout-lyrics.is-resizing,
+.layout-lyrics.is-window-animating { transition: none; }
 .layout-lyrics.mode-cover,
 .layout-lyrics.mode-light,
 .layout-lyrics.mode-transparent { background: var(--lyric-window-background, rgba(44, 44, 44, 0.76)); }
@@ -2045,18 +2126,35 @@ body.settings-window .sheet-body { padding: 0 var(--space-4) var(--space-4); }
 }
 .layout-lyrics.lyric-window-clear .grip::before,
 .layout-lyrics.lyric-window-clear .grip::after { display: none; }
+/* 纯歌词窗口很矮，边缘把手会抢走左键拖动；缩放只保留右下角，其余位置拖动即平移。 */
+.layout-lyrics .grip-r,
+.layout-lyrics .grip-b { pointer-events: none; }
 .layout-lyrics .lyric-toolbar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 10px;
-  flex: 0 0 36px;
-  height: 36px;
+  flex: 0 0 0px;
+  height: 0;
+  min-height: 0;
   min-width: 0;
-  padding: 3px 8px 0;
+  padding: 0 8px;
+  overflow: hidden;
   color: var(--lyric-base);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: flex-basis 220ms var(--ease), height 220ms var(--ease),
+              padding 220ms var(--ease), opacity 160ms var(--ease), visibility 0s 220ms;
+}
+.layout-lyrics.is-lyric-toolbar-open .lyric-toolbar {
+  flex-basis: var(--lyric-toolbar-size);
+  height: var(--lyric-toolbar-size);
+  padding-top: var(--lyric-toolbar-padding);
   opacity: 1;
-  transition: opacity 160ms var(--ease), flex-basis 220ms var(--ease), height 220ms var(--ease), padding 220ms var(--ease);
+  visibility: visible;
+  pointer-events: auto;
+  transition-delay: 0s;
 }
 .layout-lyrics .lyric-toolbar-song,
 .layout-lyrics .lyric-toolbar-playback,
@@ -2086,15 +2184,34 @@ body.settings-window .sheet-body { padding: 0 var(--space-4) var(--space-4); }
 .layout-lyrics .lyric-icon-pause,
 .layout-lyrics.is-playing .lyric-icon-play { display: none !important; }
 .layout-lyrics.is-playing .lyric-icon-pause { display: block !important; }
-.layout-lyrics.density-compact { --type-body: min(var(--lyric-font-size), 24px); }
-.layout-lyrics.density-compact .lyric-toolbar { flex-basis: 30px; height: 30px; padding-top: 0; }
+.layout-lyrics.density-compact {
+  --type-body: min(var(--lyric-font-size), 24px);
+  --lyric-toolbar-size: 30px;
+  --lyric-toolbar-padding: 0px;
+}
 .layout-lyrics.density-compact .card-body { padding: 0 8px 4px; }
 .layout-lyrics.is-quiet .lyric-toolbar { opacity: 0; visibility: hidden; pointer-events: none; }
 .layout-lyrics.is-compact .lyric-toolbar-title { display: none; }
 .layout-lyrics.is-compact .lyric-toolbar { grid-template-columns: minmax(20px, 1fr) auto auto; }
 .layout-lyrics .lyric-toolbar[hidden] { display: none !important; }
-.layout-lyrics.lyric-toolbar-hidden .card-body { padding-block: 0; }
 .layout-lyrics.is-dragging { cursor: grabbing; }
+/* 显隐由同一交互状态控制卡片与顶栏；穿透不能被原生悬停或焦点唤醒。 */
+.layout-lyrics.is-click-through .lyric-toolbar {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+  transition: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .layout-lyrics.widget-card,
+  .layout-lyrics .lyric-toolbar { transition: none !important; }
+}
+.menu [data-menu-item][hidden] { display: none !important; }
+.layout-lyrics .lyric-toolbar button.liked { color: var(--lyric-active); }
+.layout-lyrics .lyric-toolbar button.liked svg { fill: currentColor; }
+
+img { -webkit-user-drag: none; user-select: none; }
+.circuit-art { -webkit-app-region: no-drag !important; }
 
 /* 全面采用 no-drag 消除 Chromium 对右键 contextmenu 的拦截，左键支持平滑拖拽 */
 .layout-lyrics.widget-card,
@@ -2149,9 +2266,9 @@ body.settings-window .sheet-body { padding: 0 var(--space-4) var(--space-4); }
 .layout-lyrics .karaoke-word, .layout-lyrics .karaoke-single { will-change: auto; }
 .layout-lyrics .karaoke-word,
 .layout-lyrics .karaoke-single {
-  font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-family: var(--lyric-font-family, "DengXian", "等线", sans-serif);
   font-size: var(--type-body);
-  font-weight: var(--lyric-weight, 400);
+  font-weight: 300;
   line-height: 1.38;
   letter-spacing: 0;
   -webkit-text-stroke: var(--lyric-stroke-width, .5px) var(--lyric-text-stroke, #101010);
@@ -2160,9 +2277,9 @@ body.settings-window .sheet-body { padding: 0 var(--space-4) var(--space-4); }
 }
 .layout-lyrics .karaoke-word { margin-right: 0; white-space: pre; }
 .layout-lyrics .karaoke-placeholder {
-  font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-family: var(--lyric-font-family, "DengXian", "等线", sans-serif);
   font-size: var(--type-body);
-  font-weight: var(--lyric-weight, 400);
+  font-weight: 300;
   line-height: 1.38;
   color: var(--lyric-base);
   -webkit-text-stroke: var(--lyric-stroke-width, .5px) var(--lyric-text-stroke, #101010);
@@ -2172,9 +2289,9 @@ body.settings-window .sheet-body { padding: 0 var(--space-4) var(--space-4); }
   position: relative;
   margin: 0;
   min-height: calc(var(--type-body) * 1.12);
-  font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-family: var(--lyric-font-family, "DengXian", "等线", sans-serif);
   font-size: calc(var(--type-body) * 0.8);
-  font-weight: var(--lyric-weight, 400);
+  font-weight: 300;
   line-height: 1.4;
   color: var(--lyric-base);
   -webkit-text-stroke: var(--lyric-stroke-width, .5px) var(--lyric-text-stroke, #101010);
@@ -2186,8 +2303,8 @@ body.settings-window .sheet-body { padding: 0 var(--space-4) var(--space-4); }
 .layout-lyrics .karaoke-next:empty { display: none; }
 .layout-lyrics.has-song-translation { --type-body: var(--fitted-lyric-size); }
 .layout-lyrics .lyric-translation {
-  font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
-  font-weight: var(--lyric-weight, 400);
+  font-family: var(--lyric-font-family, "DengXian", "等线", sans-serif);
+  font-weight: 300;
   color: var(--lyric-base); text-align: var(--lyric-align, center);
   -webkit-text-stroke: var(--lyric-stroke-width, .5px) var(--lyric-text-stroke, #101010);
   paint-order: stroke fill; text-shadow: none; filter: none;

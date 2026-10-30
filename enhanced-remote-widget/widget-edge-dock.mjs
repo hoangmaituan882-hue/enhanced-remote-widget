@@ -43,7 +43,8 @@ export function createEdgeDockController({ card, edgePeekTab, state, sheet, menu
 
   function checkEdge() {
     if (disposed) return;
-    if (!state.edgeDock) {
+    // 穿透优先于贴边悬停唤醒，歌词保持可见且不随鼠标展开。
+    if (!state.edgeDock || (state.layout === 'lyrics' && state.lyricClickThrough)) {
       disengage();
       return;
     }
@@ -87,7 +88,7 @@ export function createEdgeDockController({ card, edgePeekTab, state, sheet, menu
   }
 
   function peek() {
-    if (disposed || !card.classList.contains('is-edge-docked')) return;
+    if (disposed || (state.layout === 'lyrics' && state.lyricClickThrough) || !card.classList.contains('is-edge-docked')) return;
     clearLeaveTimer();
     card.classList.add('is-peeking');
     // Protection can end without a pointer event (menu/editor/announcement).

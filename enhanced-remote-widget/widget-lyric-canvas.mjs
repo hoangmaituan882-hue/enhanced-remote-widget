@@ -210,9 +210,10 @@ export function drawLyricStylePreview(canvas, style = {}) {
   context.setTransform(1, 0, 0, 1, 0, 0);
   context.clearRect(0, 0, width, height);
   context.setTransform(ratio, 0, 0, ratio, 0, 0);
-  const weight = [400, 500, 600].includes(style.fontWeight) ? style.fontWeight : 400;
+  const weight = 300;
   const strokeWidth = [0, 0.5, 1, 1.5, 2].includes(style.strokeWidth) ? style.strokeWidth : 0.5;
-  context.font = `${weight} 56px "Segoe UI", "Microsoft YaHei UI", sans-serif`;
+  const family = (typeof style.fontFamily === 'string' ? style.fontFamily.trim() : '') || '"DengXian", "等线", sans-serif';
+  context.font = `${weight} 56px ${family}`;
   context.textAlign = 'left';
   context.textBaseline = 'alphabetic';
   context.lineJoin = 'round';

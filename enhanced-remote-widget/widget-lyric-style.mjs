@@ -1,5 +1,7 @@
+export const LYRIC_FONT_STACK = '"DengXian", "等线", sans-serif';
+
 export const LYRIC_STYLE_DEFAULTS = Object.freeze({
-  rendering: 'grayscale', fontWeight: 400, strokeWidth: .5,
+  rendering: 'grayscale', fontWeight: 400, strokeWidth: .5, fontFamily: '',
   borderColor: '#8f8f8f', backgroundColor: '#2c2c2c', backgroundOpacity: 76,
   textColor: '#ffffff', highlightColor: '#ffa04d',
   textStrokeColor: '#101010', highlightStrokeColor: '#101010'
@@ -15,6 +17,11 @@ export const LYRIC_STYLE_PRESETS = Object.freeze({
 const colors = new Set(['borderColor', 'backgroundColor', 'textColor', 'highlightColor', 'textStrokeColor', 'highlightStrokeColor']);
 export function lyricStyleValue(name, value) {
   if (colors.has(name)) return typeof value === 'string' && /^#[\da-f]{6}$/i.test(value) ? value.toLowerCase() : undefined;
+  if (name === 'fontFamily') {
+    // 字体名直接写进 CSS 变量：去掉会破坏声明或注入的字符，空串表示用内置等线栈。
+    if (typeof value !== 'string') return undefined;
+    return value.replace(/[{}<>;\\\u0000-\u001f]/g, '').trim().slice(0, 120);
+  }
   if (name === 'rendering') return ['grayscale', 'system'].includes(value) ? value : undefined;
   if (name === 'fontWeight') return [400, 500, 600].includes(value) ? value : undefined;
   if (name === 'strokeWidth') return [0, .5, 1, 1.5, 2].includes(value) ? value : undefined;
@@ -29,7 +36,7 @@ export function normalizeLyricStyle(value) {
 }
 export function lyricStylePreset(style) {
   return Object.entries(LYRIC_STYLE_PRESETS).find(([, preset]) =>
-    Object.entries(preset.values).every(([name, value]) => ['rendering', 'fontWeight'].includes(name) || style[name] === value))?.[0] || 'custom';
+    Object.entries(preset.values).every(([name, value]) => ['rendering', 'fontWeight', 'fontFamily'].includes(name) || style[name] === value))?.[0] || 'custom';
 }
 export function applyLyricStyle(element, style) {
   const clearWindow = style.backgroundOpacity === 0;
@@ -38,6 +45,7 @@ export function applyLyricStyle(element, style) {
     '--lyric-active': style.highlightColor, '--lyric-base': style.textColor,
     '--lyric-text-stroke': style.textStrokeColor, '--lyric-highlight-stroke': style.highlightStrokeColor,
     '--lyric-stroke-width': style.strokeWidth + 'px', '--lyric-weight': style.fontWeight,
+    '--lyric-font-family': style.fontFamily || LYRIC_FONT_STACK,
     '--lyric-window-border': style.borderColor + (clearWindow ? '00' : '57'),
     '--lyric-window-background': style.backgroundColor + Math.round(style.backgroundOpacity * 2.55).toString(16).padStart(2, '0')
   })) element.style.setProperty(name, String(value));

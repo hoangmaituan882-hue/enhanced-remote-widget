@@ -13,7 +13,7 @@
 <body>
   <div class="widget-card mode-paper layout-poster" id="widget-card" tabindex="-1">
     <section id="circuit-card" class="circuit-card" aria-label="音乐封面海报" hidden inert>
-      <div class="circuit-art"><img id="circuit-cover" alt="歌曲封面" hidden></div>
+      <div class="circuit-art"><img id="circuit-cover" alt="歌曲封面" draggable="false" hidden></div>
       <div class="circuit-copy" id="circuit-copy">
         <button id="circuit-title" class="circuit-title no-drag" type="button" aria-label="拖动歌名改变排版"><svg class="circuit-mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 4C3-3-3 3 4 8c-7 5-1 11 4 4 5 7 11 1 4-4 7-5 1-11-4-4Z" fill="currentColor"/></svg><span id="circuit-title-text"></span></button>
         <div id="circuit-metadata" class="circuit-metadata">
@@ -24,6 +24,7 @@
       </div>
     </section>
     <div class="tint-layer" id="tint-layer"></div>
+    <div class="connection-status no-drag" id="connection-status" role="status" aria-live="polite" aria-atomic="true" hidden></div>
 
     <!-- 工具条（全部功能已收拢至右键菜单，默认隐藏释放排版空间） -->
     <div class="toolbar no-drag" style="display: none !important;">
@@ -87,6 +88,7 @@
         <button type="button" id="lyric-next" aria-label="下一曲" title="下一曲"><svg viewBox="0 0 24 24"><path d="M19 5v14M6 5l10 7-10 7V5Z"/></svg></button>
       </div>
       <div class="lyric-toolbar-actions">
+        <button type="button" id="lyric-like" aria-label="添加到喜爱" title="添加到喜爱" aria-pressed="false"><svg viewBox="0 0 24 24"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21.2l8.8-8.8a5.5 5.5 0 0 0 0-7.8Z"/></svg></button>
         <button type="button" id="lyric-lock" aria-label="锁定位置" title="锁定位置"><svg viewBox="0 0 24 24"><rect x="6" y="10" width="12" height="10" rx="2"/><path d="M9 10V7a3 3 0 0 1 6 0v3"/></svg></button>
         <button type="button" id="lyric-settings" aria-label="偏好设置" title="偏好设置"><svg viewBox="0 0 24 24"><path d="M9.5 3.6h5l.6 2.1 1.6.9 2.1-.5 2.5 4.3-1.5 1.6v1.9l1.5 1.6-2.5 4.3-2.1-.5-1.6.9-.6 2.1h-5l-.6-2.1-1.6-.9-2.1.5-2.5-4.3 1.5-1.6v-1.9l-1.5-1.6 2.5-4.3 2.1.5 1.6-.9.6-2.1Z"/><circle cx="12" cy="12.5" r="2.4"/></svg></button>
         <button type="button" id="lyric-hide" aria-label="隐藏歌词" title="隐藏歌词"><svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg></button>
@@ -97,7 +99,7 @@
       <div class="row-top">
         <!-- 封面：单击播放，双击打开独立设置窗口 -->
         <div class="cover no-drag t-resize" id="cover" role="button" tabindex="0" aria-label="播放／暂停，双击打开偏好设置" title="单击播放／暂停，双击打开偏好设置">
-          <img class="cover-img" id="cover-img" alt="歌曲封面" decoding="async" style="display: none;">
+          <img class="cover-img" id="cover-img" alt="歌曲封面" draggable="false" decoding="async" style="display: none;">
           <div class="cover-fallback" id="cover-fallback">
             <svg viewBox="0 0 24 24">
               <circle cx="12" cy="12" r="9"></circle>
@@ -160,6 +162,7 @@
           </div>
         </div>
       </div>
+
 
       <!-- 海报底栏：歌词、播放时间与播放操作 -->
       <div class="poster-bottom no-drag" id="poster-bottom">
@@ -258,6 +261,7 @@
             <section class="settings-section" aria-labelledby="layout-heading"><h2 id="layout-heading">布局与尺寸</h2><div class="settings-group">
               <div class="row row-wrap"><div class="row-label"><span>布局</span><span class="row-sub">每种布局分别记住尺寸与歌词设置</span></div><div class="layout-choice-grid" id="layout-picker" role="group" aria-label="界面布局"><button class="layout-option active" type="button" data-layout="poster" aria-pressed="true"><span class="layout-option-visual preview-poster" aria-hidden="true"><span class="preview-cover"></span><span class="preview-copy"><i></i><i></i></span></span><span class="layout-option-name">海报款</span><span class="layout-option-description">封面与专辑优先</span><span class="layout-option-size">320 × 384 · 推荐</span><span class="layout-check" aria-hidden="true">✓</span></button><button class="layout-option " type="button" data-layout="capsule" aria-pressed="false"><span class="layout-option-visual preview-capsule" aria-hidden="true"><span class="preview-cover"></span><span class="preview-copy"><i></i><i></i></span></span><span class="layout-option-name">紧凑胶囊</span><span class="layout-option-description">适合桌面常驻</span><span class="layout-option-size">384 × 160 · 推荐</span><span class="layout-check" aria-hidden="true">✓</span></button><button class="layout-option " type="button" data-layout="standard" aria-pressed="false"><span class="layout-option-visual preview-standard" aria-hidden="true"><span class="preview-cover"></span><span class="preview-copy"><i></i><i></i></span><span class="preview-controls"><i></i><i></i><i></i></span></span><span class="layout-option-name">全功能</span><span class="layout-option-description">歌词与控制齐全</span><span class="layout-option-size">528 × 272 · 推荐</span><span class="layout-check" aria-hidden="true">✓</span></button><button class="layout-option " type="button" data-layout="lyrics" aria-pressed="false"><span class="layout-option-visual preview-lyrics" aria-hidden="true"><span class="preview-copy"><i></i><i></i></span></span><span class="layout-option-name">纯歌词</span><span class="layout-option-description">专注当下歌词</span><span class="layout-option-size">512 × 160 · 推荐</span><span class="layout-check" aria-hidden="true">✓</span></button><button class="layout-option" type="button" data-layout="circuit" aria-pressed="false"><span class="layout-option-visual preview-poster preview-circuit" aria-hidden="true"><span class="preview-cover"></span><span class="preview-copy"><i></i></span></span><span class="layout-option-name">Circuit 海报</span><span class="layout-option-description">拖动歌名改变排版</span><span class="layout-option-size">304 × 488 · 推荐</span><span class="layout-check" aria-hidden="true">✓</span></button></div></div>
               <div class="row row-size"><div class="row-label"><span>窗口尺寸</span><span class="row-sub" id="size-current">推荐 · 320 × 384</span></div><div class="size-controls"><div class="segments" id="size-picker" role="group" aria-label="窗口尺寸"><button type="button" class="seg" data-w="288" data-h="352">小巧</button><button type="button" class="seg active" data-w="320" data-h="384">推荐</button><button type="button" class="seg" data-w="352" data-h="432">宽裕</button></div><button class="size-reset" type="button" id="btn-size-reset">恢复推荐</button></div></div>
+              <div class="row row-wrap"><div class="row-label"><span>窗口位置</span><span class="row-sub">移回鼠标所在屏幕的中央，保留当前尺寸和其他布局</span></div><button class="size-reset" type="button" id="btn-position-reset">找回窗口位置</button></div>
             </div></section>
             <section class="settings-section circuit-settings-section" id="circuit-style-section" aria-labelledby="circuit-style-heading" hidden>
               <h2 id="circuit-style-heading">Circuit 排版</h2>
@@ -279,10 +283,15 @@
           </section>
           <section class="settings-pane" id="settings-pane-interaction" role="tabpanel" aria-labelledby="settings-tab-interaction" tabindex="0" hidden>
             <section class="settings-section" aria-labelledby="wheel-heading"><h2 id="wheel-heading">鼠标滚轮</h2><div class="settings-group"><div class="row"><label class="row-label" for="wheel-behavior"><span>滚轮操作</span><span class="row-sub">鼠标位于小组件时生效</span></label><select id="wheel-behavior" aria-describedby="wheel-description"><option value="volume">调整音量</option><option value="seek" selected>调整歌曲进度</option><option value="track">上一首 / 下一首</option></select></div><p class="group-note" id="wheel-description">向上快进 5 秒，向下后退 5 秒。</p></div></section>
-            <section class="settings-section" aria-labelledby="window-heading"><h2 id="window-heading">桌面窗口</h2><div class="settings-group"><div class="row"><label class="row-label" for="set-lock"><span>固定位置</span><span class="row-sub">锁定后不可拖动，避免误触移位</span></label><label class="toggle"><input type="checkbox" id="set-lock" aria-label="固定位置" ><span class="toggle-track"></span></label></div><div class="row"><label class="row-label" for="set-edge-dock"><span>贴边收起</span><span class="row-sub">贴靠屏幕边缘后收起，悬停展开</span></label><label class="toggle"><input type="checkbox" id="set-edge-dock" aria-label="贴边收起" ><span class="toggle-track"></span></label></div></div></section>
+            <section class="settings-section" aria-labelledby="window-heading"><h2 id="window-heading">桌面窗口</h2><div class="settings-group"><div class="row row-wrap"><div class="row-label"><span>恢复交互</span><span class="row-sub">关闭穿透、解除位置锁定与贴边收起，不重置外观和歌词</span></div><button class="size-reset" type="button" id="btn-recover-interaction">恢复显示与交互</button></div><div class="row"><label class="row-label" for="set-lock"><span>固定位置</span><span class="row-sub">锁定后不可拖动，避免误触移位</span></label><label class="toggle"><input type="checkbox" id="set-lock" aria-label="固定位置" ><span class="toggle-track"></span></label></div><div class="row"><label class="row-label" for="set-edge-dock"><span>贴边收起</span><span class="row-sub">贴靠屏幕边缘后收起，悬停展开</span></label><label class="toggle"><input type="checkbox" id="set-edge-dock" aria-label="贴边收起" ><span class="toggle-track"></span></label></div></div></section>
             <section class="settings-section" aria-labelledby="quiet-heading"><h2 id="quiet-heading">闲置与沉浸</h2><div class="settings-group"><div class="row"><label class="row-label" for="set-immersive"><span>沉浸模式</span><span class="row-sub">闲置时淡出控件，悬停或聚焦恢复</span></label><label class="toggle"><input type="checkbox" id="set-immersive" aria-label="沉浸模式" ><span class="toggle-track"></span></label></div><div class="row"><label class="row-label" for="set-auto-shrink"><span>未播放时自动隐藏</span><span class="row-sub">暂停或停止约 1 秒后隐藏，播放时恢复；设置期间保持显示</span></label><label class="toggle"><input type="checkbox" id="set-auto-shrink" aria-label="未播放时自动隐藏" ><span class="toggle-track"></span></label></div><div class="row"><label class="row-label" for="set-song-toast"><span>切歌播报</span><span class="row-sub">切歌时显示整个小组件 5 秒，再整体隐藏；下次切歌重新显示</span></label><label class="toggle"><input type="checkbox" id="set-song-toast" aria-label="切歌播报" ><span class="toggle-track"></span></label></div></div></section>
+            <section class="settings-section" aria-labelledby="song-transition-heading"><h2 id="song-transition-heading">切歌动效</h2><div class="settings-group"><div class="row"><label class="row-label" for="set-song-transition"><span>切歌画面过渡</span><span class="row-sub">封面、歌曲信息与歌词柔和交接，不改变音频或窗口尺寸</span></label><label class="toggle"><input type="checkbox" id="set-song-transition" aria-label="切歌画面过渡" checked><span class="toggle-track"></span></label></div><p class="group-note">默认开启；连续切歌立即切到最新歌曲，系统减少动态效果时不播放过渡。Circuit 文字沿用原有排版过渡。</p></div></section>
           </section>
           <section class="settings-pane" id="settings-pane-lyrics" role="tabpanel" aria-labelledby="settings-tab-lyrics" tabindex="0" hidden>
+            <section class="settings-section" aria-labelledby="lyric-translation-heading"><h2 id="lyric-translation-heading">翻译设置</h2><div class="settings-group">
+              <div class="row"><label class="row-label" for="set-lyric-translation"><span>显示翻译歌词</span><span class="row-sub" id="lyric-translation-help">默认开启；在当前原文下方显示较小的译文，没有译文时自动收起</span></label><label class="toggle"><input type="checkbox" id="set-lyric-translation" aria-label="显示翻译歌词" aria-describedby="lyric-translation-help" checked><span class="toggle-track"></span></label></div>
+              <p class="group-note">使用 Folia 提供的译文，随当前句同步；关闭仅隐藏译文，不影响原文、下一句或逐词高亮。此开关也适用于其他显示歌词的布局。</p>
+            </div></section>
             <section class="settings-section" aria-labelledby="lyric-style-heading"><h2 id="lyric-style-heading">歌词模式样式</h2><div class="settings-group">
               <div class="row"><label class="row-label" for="lyric-style-preset"><span>歌词样式</span><span class="row-sub">仅改变纯歌词窗口</span></label><select id="lyric-style-preset"><option value="classic">经典橙白</option><option value="light">清爽浅色</option><option value="custom">自定义</option></select></div>
               <div class="lyric-style-editor">
@@ -297,6 +306,7 @@
                 <figure class="lyric-style-preview"><div id="lyric-preview-surface"><canvas id="lyric-preview-canvas" aria-hidden="true"></canvas></div><figcaption>实时预览</figcaption></figure>
               </div>
               <div class="row row-wrap lyric-opacity-row"><label class="row-label" for="lyric-background-opacity"><span>背景不透明度</span><span class="row-sub">设为 0% 同时隐藏背景、边框与阴影</span></label><output id="lyric-opacity-value" for="lyric-background-opacity">76%</output><input id="lyric-background-opacity" type="range" min="0" max="100" step="1" value="76" aria-label="歌词背景不透明度"></div>
+              <div class="row"><label class="row-label" for="lyric-font-family"><span>歌词字体</span><span class="row-sub">默认等线 Light；可从系统已安装字体中选择</span></label><select id="lyric-font-family" aria-label="歌词字体"><option value="">等线 Light（默认）</option></select></div>
               <div class="row"><label class="row-label" for="lyric-stroke-width"><span>描边宽度</span></label><select id="lyric-stroke-width"><option value="0">无描边</option><option value="0.5" selected>0.5 px</option><option value="1">1 px</option><option value="1.5">1.5 px</option><option value="2">2 px</option></select></div>
             </div></section>
             <section class="settings-section" aria-labelledby="lyric-render-heading"><h2 id="lyric-render-heading">文字渲染</h2><div class="settings-group">
@@ -305,8 +315,9 @@
               <div class="row"><div class="row-label"><span>字重</span><span class="row-sub">较细的笔画更轻盈</span></div><div class="segments" id="lyric-weight-picker" role="group" aria-label="歌词字重"><button type="button" class="seg" data-weight="400">常规</button><button type="button" class="seg" data-weight="500">适中</button><button type="button" class="seg" data-weight="600">加粗</button></div></div>
             </div></section>
             <section class="settings-section" aria-labelledby="lyrics-heading"><h2 id="lyrics-heading">歌词显示</h2><div class="settings-group"><div class="row"><label class="row-label" for="set-karaoke"><span>逐词高亮</span><span class="row-sub">随演唱逐词上色，关闭后整句显示</span></label><label class="toggle"><input type="checkbox" id="set-karaoke" aria-label="逐词高亮" checked><span class="toggle-track"></span></label></div>
-              <div class="row"><label class="row-label" for="set-lyric-translation"><span>歌词翻译</span><span class="row-sub">跟随当前句；适用于所有显示歌词的布局，无翻译时自动收起</span></label><label class="toggle"><input type="checkbox" id="set-lyric-translation" aria-label="歌词翻译" checked><span class="toggle-track"></span></label></div>
-              <div class="row"><label class="row-label" for="set-lyric-toolbar"><span>顶部控制栏</span><span class="row-sub">纯歌词布局；隐藏后仍可右键打开设置</span></label><label class="toggle"><input type="checkbox" id="set-lyric-toolbar" aria-label="顶部控制栏" checked><span class="toggle-track"></span></label></div>
+              <div class="row"><label class="row-label" for="set-lyric-transition"><span>歌词换句过渡</span><span class="row-sub">自然换句时轻柔淡化并上移，原文、译文和下一句同步；跳进度直接定位</span></label><label class="toggle"><input type="checkbox" id="set-lyric-transition" aria-label="歌词换句过渡" checked><span class="toggle-track"></span></label></div>
+              <div class="row"><label class="row-label" for="set-lyric-toolbar"><span>顶部控制栏</span><span class="row-sub">纯歌词布局；悬停时卡片展开显示，收起不占位；关闭后仍可右键打开设置</span></label><label class="toggle"><input type="checkbox" id="set-lyric-toolbar" aria-label="顶部控制栏" checked><span class="toggle-track"></span></label></div>
+              <div class="row"><label class="row-label" for="set-lyric-click-through"><span>点击穿透</span><span class="row-sub">仅纯歌词生效；悬停、左键和滚轮均不响应，右键菜单可关闭穿透。宿主「恢复小组件显示与交互」仍可应急找回</span></label><label class="toggle"><input type="checkbox" id="set-lyric-click-through" aria-label="点击穿透"><span class="toggle-track"></span></label></div>
               <div class="row row-wrap"><div class="row-label"><span>字号</span><span class="row-sub">仅调整当前布局</span></div><div class="segments" id="font-picker" role="group" aria-label="歌词字号"><button type="button" class="seg" data-size="12.5px">12.5</button><button type="button" class="seg" data-size="14px">14</button><button type="button" class="seg" data-size="16px">16</button><button type="button" class="seg" data-size="20px">20</button><button type="button" class="seg" data-size="24px">24</button><button type="button" class="seg" data-size="28px">28</button><button type="button" class="seg" data-size="32px">32</button></div></div>
               <div class="row"><div class="row-label"><span>对齐</span><span class="row-sub">纯歌词布局</span></div><div class="segments" id="align-picker" role="group" aria-label="歌词对齐"><button type="button" class="seg" data-align="left">左侧</button><button type="button" class="seg" data-align="center">居中</button><button type="button" class="seg" data-align="right">右侧</button></div></div>
               <div class="row"><div class="row-label"><span>行数</span><span class="row-sub">纯歌词布局</span></div><div class="segments" id="lines-picker" role="group" aria-label="歌词行数"><button type="button" class="seg" data-lines="1">单行</button><button type="button" class="seg" data-lines="2">双行</button></div></div>
@@ -347,7 +358,7 @@
       </button>
       <button class="menu-action-btn menu-action-primary" id="menu-play" type="button" role="menuitem" data-menu-item data-label="播放" title="播放" aria-label="播放">
         <svg id="menu-icon-play" viewBox="0 0 24 24"><polygon points="6.5 4 20 12 6.5 20" fill="currentColor" stroke="none"></polygon></svg>
-        <svg id="menu-icon-pause" viewBox="0 0 24 24" style="display: none;"><line x1="7" y1="4" x2="7" y2="20"></line><line x1="17" y1="4" x2="17" y2="20"></line></svg>
+        <svg id="menu-icon-pause" viewBox="0 0 24 24" aria-hidden="true"><line x1="7" y1="4" x2="7" y2="20"></line><line x1="17" y1="4" x2="17" y2="20"></line></svg>
       </button>
       <button class="menu-action-btn" id="menu-next" type="button" role="menuitem" data-menu-item data-label="下一曲" title="下一曲" aria-label="下一曲">
         <svg viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20" fill="currentColor" stroke="none"></polygon><line x1="19" y1="5" x2="19" y2="19"></line></svg>
@@ -384,6 +395,13 @@
     </button>
 
     <div class="menu-sep" role="separator"></div>
+
+    <button class="menu-item" id="menu-disable-click-through" type="button" role="menuitem" data-menu-item data-label="关闭点击穿透" hidden>
+      <div class="menu-left">
+        <svg viewBox="0 0 24 24"><path d="M5 3v16l4-4 3 6 3-1-3-6h6Z"></path></svg>
+        <span id="menu-disable-click-through-text">关闭点击穿透</span>
+      </div>
+    </button>
 
     <!-- 窗口属性组 (Toggled Items: 沉浸模式、锁定位置、窗口置顶、贴边抽屉) -->
     <button class="menu-item" id="menu-zen" type="button" role="menuitemcheckbox" aria-checked="false" data-menu-item data-label="沉浸模式">

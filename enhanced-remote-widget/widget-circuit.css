@@ -17,6 +17,9 @@ body.mode-circuit { background: transparent; padding: 0; }
 .circuit-art img { display: block; width: 100%; height: 100%; object-fit: contain; }
 .circuit-art img[hidden] { display: none; }
 .circuit-copy { position: relative; flex: 1 1 auto; min-height: 0; background: #fff; color: #000; overflow: hidden; }
+/* 海报整块交给 DOM：右键菜单与左键平移不再依赖系统拖拽区，Chromium 会吞掉拖拽区上的 contextmenu。 */
+.mode-circuit .circuit-art,
+.mode-circuit .circuit-copy { -webkit-app-region: no-drag; }
 .circuit-title { position: absolute; display: block; overflow: hidden; text-overflow: ellipsis; padding: 0; margin: 0; border-radius: 0; color: #000; font-family: "Inter", Arial, sans-serif; font-weight: 600; letter-spacing: -.045em; line-height: 1; text-align: left; touch-action: none; cursor: grab; }
 .circuit-title:active, .circuit-card.is-title-dragging .circuit-title { cursor: grabbing; }
 .circuit-title:focus-visible { outline: 1px solid #999; outline-offset: 4px; }

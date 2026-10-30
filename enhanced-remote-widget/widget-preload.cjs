@@ -1,17 +1,22 @@
 'use strict';
 
 const { contextBridge, ipcRenderer } = require('electron');
-const settingsPage = new URLSearchParams(location.search).has('settings');
-const sends = new Set(settingsPage
-  ? ['widget-settings-ready', 'widget-settings-action', 'widget-settings-close']
+const query = new URLSearchParams(location.search);
+const settingsPage = query.has('settings');
+const menuPage = !settingsPage && query.has('menu');
+const role = settingsPage ? 'settings' : menuPage ? 'menu' : 'player';
+const sends = new Set(menuPage ? ['widget-menu-event'] : settingsPage
+  ? ['widget-settings-ready', 'widget-settings-action', 'widget-settings-close', 'widget-fonts-request']
   : ['widget-action', 'widget-window-cmd', 'widget-request-window-state', 'widget-request-snapshot', 'widget-settings-state']);
-const receives = new Set(settingsPage
-  ? ['widget-settings-state']
+const receives = new Set(menuPage ? ['widget-menu-state'] : settingsPage
+  ? ['widget-settings-state', 'widget-fonts']
   : ['widget-update', 'widget-announcement', 'widget-visibility', 'widget-window-state', 'widget-resized',
-    'show-context-menu', 'widget-settings-request-state', 'widget-settings-action']);
+    'show-context-menu', 'widget-settings-request-state', 'widget-settings-action',
+    'widget-menu-visibility', 'widget-menu-selected']);
 const listeners = new Set();
 
 contextBridge.exposeInMainWorld('foliaWidget', Object.freeze({
+  role,
   send(channel, payload) {
     if (sends.has(channel)) ipcRenderer.send(channel, payload);
   },

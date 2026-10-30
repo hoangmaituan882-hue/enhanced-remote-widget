@@ -4,9 +4,13 @@
 
 const path = require('path');
 const { pathToFileURL } = require('url');
+const { execFileSync } = require('child_process');
 const { app, BrowserWindow, ipcMain, screen } = require('electron');
 const createWindowLayouts = require('./window-layouts.cjs');
 const createWidgetVisibility = require('./widget-visibility.cjs');
+const createWindowMover = require('./window-move.cjs');
+const createRightClickMonitor = require('./window-right-click.cjs');
+const createMenuWindow = require('./window-menu.cjs');
 
 const transientInteractions = ['pointer', 'menu', 'editor'];
 const windowPreferences = () => ({
@@ -20,7 +24,8 @@ const windowPreferences = () => ({
 
 function restrictWindowNavigation(window, settingsPage = false) {
   const entry = pathToFileURL(path.join(__dirname, 'widget.html'));
-  if (settingsPage) entry.searchParams.set('settings', '1');
+  if (settingsPage === 'menu') entry.searchParams.set('menu', '1');
+  else if (settingsPage) entry.searchParams.set('settings', '1');
   // Allow reloading this document, but never replacing it or changing roles.
   window.webContents.on('will-navigate', (event, url) => {
     if ((event.url ?? url) !== entry.href) event.preventDefault();
@@ -37,7 +42,25 @@ try {
 } catch (e) {}
 
 
+let systemFonts = null;
+// 系统字体列表：设置页歌词字体下拉用；首次请求时读取一次并缓存。
+function listSystemFonts() {
+  if (systemFonts) return systemFonts;
+  if (process.platform !== 'win32') return (systemFonts = []);
+  const script = '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; Add-Type -AssemblyName System.Drawing; (New-Object System.Drawing.Text.InstalledFontCollection).Families | ForEach-Object { $_.Name }';
+  try {
+    const output = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', timeout: 5000, windowsHide: true });
+    systemFonts = [...new Set(output.split(/\r?\n/).map(line => line.trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  } catch {
+    systemFonts = [];
+  }
+  return systemFonts;
+}
+
 module.exports = function activate(api) {
+  const moveWindow = createWindowMover((error, position) => {
+    api.log.warn(`组件移动失败 (${position.x}, ${position.y}): ${error.message}`);
+  });
   let widgetWindow = null;
   let settingsWindow = null;
   let isDisposed = false;
@@ -45,11 +68,76 @@ module.exports = function activate(api) {
   let shouldShowWidget = true;
   let isAlwaysOnTop = true;
   let pendingLayoutAnchor = null;
+  let clickThroughRequested = false;
+  let menuInteractionActive = false;
+  let needsInteractionRecovery = false;
+  let rendererReady = false;
+  const menuWindow = createMenuWindow({
+    BrowserWindow, screen, getOwner: () => widgetWindow, webPreferences: windowPreferences,
+    restrictNavigation: window => restrictWindowNavigation(window, 'menu'),
+    onOpenChange(active, reason) {
+      menuInteractionActive = active;
+      visibility.hold('menu', active);
+      if (widgetWindow && !widgetWindow.isDestroyed()) {
+        widgetWindow.webContents.send('widget-menu-visibility', { open: active, reason });
+        if (!active && reason === 'keyboard' && widgetWindow.isVisible()) widgetWindow.focus();
+      }
+      syncMouseEvents();
+    },
+    onSelect(id) {
+      if (widgetWindow && !widgetWindow.isDestroyed()) widgetWindow.webContents.send('widget-menu-selected', id);
+    },
+    onError(error) { api.log.warn('打开小组件菜单失败: ' + error.message); }
+  });
+  const rightClickMonitor = createRightClickMonitor({
+    getWindow: () => widgetWindow,
+    onReady: () => syncMouseEvents(),
+    onClick(point) {
+      if (isDisposed || !clickThroughRequested || menuInteractionActive || !rendererReady || settingsWindow ||
+          !widgetWindow || widgetWindow.isDestroyed() || !widgetWindow.isVisible()) return;
+      const cursor = screen.screenToDipPoint(point);
+      const bounds = widgetWindow.getBounds();
+      const x = Math.round(cursor.x - bounds.x);
+      const y = Math.round(cursor.y - bounds.y);
+      if (x < 0 || y < 0 || x >= bounds.width || y >= bounds.height) return;
+      // The menu takes focus in its own popup; the lyrics stay click-through.
+      menuInteractionActive = true;
+      widgetWindow.webContents.send('show-context-menu', { x, y });
+    },
+    onError(error) {
+      if (isDisposed) return;
+      api.log.warn('点击穿透右键入口不可用，已恢复鼠标交互: ' + error.message);
+      clickThroughRequested = false;
+      syncMouseEvents();
+      if (widgetWindow && !widgetWindow.isDestroyed()) {
+        widgetWindow.webContents.send('widget-settings-action', { type: 'click-through-unavailable' });
+      }
+    }
+  });
+  // Windows can bring another topmost Folia window above the widget on focus.
+  // Restore z-order without taking keyboard focus from that window.
+  function raisePinnedWidget() {
+    if (isDisposed || !isAlwaysOnTop || !widgetWindow || widgetWindow.isDestroyed() || !widgetWindow.isVisible()) return;
+    try {
+      widgetWindow.setAlwaysOnTop(true, process.platform === 'win32' ? 'screen-saver' : 'floating');
+      widgetWindow.moveTop();
+    } catch (error) {
+      api.log.warn(`组件置顶失败: ${error.message}`);
+    }
+  }
+  const onFoliaWindowFocus = (_event, focusedWindow) => {
+    if (focusedWindow === widgetWindow || focusedWindow === settingsWindow || menuWindow.owns(focusedWindow)) return;
+    setImmediate(raisePinnedWidget);
+  };
   const actionQueue = [];
   let pendingActionResolver = null;
   let pollTimeoutTimer = null;
   const windowLayouts = createWindowLayouts(api, screen);
   const saveBounds = (bounds, profileMode = 'full') => windowLayouts.remember(bounds, profileMode);
+  // 渲染端刚起来时只有增量状态，向 client 要一次带歌词的全量快照（Folium 1.7 起可用）。
+  function requestFullState() {
+    try { if (typeof api.rpc.send === 'function') api.rpc.send('request-state', { full: true }); } catch {}
+  }
   const visibility = createWidgetVisibility({
     presentAnnouncement(active) {
       if (widgetWindow && !widgetWindow.isDestroyed()) widgetWindow.webContents.send('widget-announcement', active);
@@ -62,6 +150,7 @@ module.exports = function activate(api) {
       widgetWindow.webContents.send('widget-announcement', visibility.isAnnouncing());
       widgetWindow.webContents.send('widget-update', latestState);
       widgetWindow.showInactive();
+      raisePinnedWidget();
     },
     hide() {
       if (widgetWindow && !widgetWindow.isDestroyed()) widgetWindow.hide();
@@ -92,8 +181,68 @@ module.exports = function activate(api) {
     return !isDisposed && settingsWindow && !settingsWindow.isDestroyed() && event?.sender === settingsWindow.webContents;
   }
 
+  function syncMouseEvents() {
+    if (isDisposed || !widgetWindow || widgetWindow.isDestroyed()) {
+      rightClickMonitor.sync(false);
+      return;
+    }
+    const requested = clickThroughRequested &&
+      windowLayouts.snapshot(widgetWindow.getBounds()).layout === 'lyrics';
+    const ignore = requested && !settingsWindow;
+    try {
+      // Do not forward mousemove: CSS hover and drawers must remain silent too.
+      // Preferences can temporarily admit input; the detached menu never
+      // changes the player's hit region. Keep the recovery helper warm.
+      rightClickMonitor.sync(requested && widgetWindow.isVisible());
+      // Do not lock out input unless the independent right-click exit is ready.
+      widgetWindow.setIgnoreMouseEvents(ignore && rightClickMonitor.isReady());
+    } catch (error) { api.log.warn('更新小组件鼠标交互失败: ' + error.message); }
+  }
+
+  function deliverInteractionRecovery() {
+    if (!needsInteractionRecovery || !rendererReady || !widgetWindow || widgetWindow.isDestroyed()) return;
+    widgetWindow.webContents.send('widget-settings-action', { type: 'recover-interaction' });
+    needsInteractionRecovery = false;
+  }
+
+  async function recoverWidget() {
+    if (isDisposed) return { visible: false };
+    menuWindow.close('recover');
+    clickThroughRequested = false;
+    needsInteractionRecovery = true;
+    visibility.releaseHolds(transientInteractions);
+    await createOrShowWidgetWindow();
+    if (isDisposed || !widgetWindow || widgetWindow.isDestroyed()) return { visible: false };
+    syncMouseEvents();
+    deliverInteractionRecovery();
+    restoreWindowBounds('position');
+    return { visible: true };
+  }
+
+  function restoreWindowBounds(kind = 'visible') {
+    if (isDisposed || !widgetWindow || widgetWindow.isDestroyed()) return;
+    stopBoundsAnimation();
+    pendingLayoutAnchor = null;
+    const current = widgetWindow.getBounds();
+    const target = kind === 'position' ? windowLayouts.resetPosition(current)
+      : kind === 'size' ? windowLayouts.resetSize(current) : windowLayouts.clampBounds(current);
+    if (['x', 'y', 'width', 'height'].some(name => current[name] !== target[name])) {
+      markTemporaryBounds();
+      const [minimumWidth, minimumHeight] = windowLayouts.minimumSize();
+      // 极小工作区也必须能找回窗口；不强制超出当前显示器的布局最小尺寸。
+      widgetWindow.setMinimumSize(Math.min(minimumWidth, target.width), Math.min(minimumHeight, target.height));
+      widgetWindow.setBounds(target);
+      saveBounds(widgetWindow.getBounds());
+      widgetWindow.webContents.send('widget-resized', widgetWindow.getBounds());
+    }
+    syncMouseEvents();
+    notifyWindowState();
+  }
+  const onDisplaysChanged = () => { menuWindow.close('display-change'); restoreWindowBounds(); };
+
   function createOrShowSettingsWindow() {
     if (isDisposed || !widgetWindow || widgetWindow.isDestroyed()) return;
+    menuWindow.close('settings');
     visibility.hold('settings', true);
     if (settingsWindow && !settingsWindow.isDestroyed()) {
       if (!settingsWindow.webContents.isLoading()) {
@@ -112,6 +261,7 @@ module.exports = function activate(api) {
       webPreferences: windowPreferences()
     });
     settingsWindow = created;
+    syncMouseEvents();
     restrictWindowNavigation(created, true);
     created.loadFile(path.join(__dirname, 'widget.html'), { query: { settings: '1' } }).catch(err => {
       if (!isDisposed) api.log.error('加载设置窗口失败: ' + err.message);
@@ -124,6 +274,7 @@ module.exports = function activate(api) {
     });
     created.on('closed', () => {
       if (settingsWindow === created) settingsWindow = null;
+      syncMouseEvents();
       visibility.hold('settings', false);
     });
   }
@@ -272,8 +423,33 @@ module.exports = function activate(api) {
     liked: false,
     canLike: false,
     lyrics: null,
-    currentLyric: ''
+    currentLyric: '',
+    connectionStatus: 'connecting'
   };
+  let connectionTimer = null;
+  function setConnectionStatus(status) {
+    if (latestState.connectionStatus === status) return;
+    latestState.connectionStatus = status;
+    const connected = status === 'connected';
+    visibility.hold('connection', !connected);
+    if (!connected) {
+      actionQueue.length = 0;
+      pendingActionResolver?.(null);
+    }
+  }
+  function watchConnection() {
+    clearTimeout(connectionTimer);
+    // 容忍后台节流与短暂停顿；超时只表示同步过期，不伪造宿主暂停。
+    connectionTimer = setTimeout(() => {
+      connectionTimer = null;
+      setConnectionStatus('stale');
+      if (widgetWindow && !widgetWindow.isDestroyed()) {
+        widgetWindow.webContents.send('widget-update', { connectionStatus: 'stale' });
+      }
+    }, 15000);
+  }
+  visibility.hold('connection', true);
+  watchConnection();
 
   // 创建或显示增强版桌面悬浮小组件窗口
   function createOrShowWidgetWindow() {
@@ -281,6 +457,7 @@ module.exports = function activate(api) {
     if (widgetWindow && !widgetWindow.isDestroyed()) {
       shouldShowWidget = true;
       visibility.manual(true);
+      restoreWindowBounds();
       widgetWindow.focus();
       return Promise.resolve();
     }
@@ -307,8 +484,8 @@ module.exports = function activate(api) {
       title: 'Folia 增强版悬浮小组件',
       alwaysOnTop: isAlwaysOnTop,
       resizable: true, // 开启自由边缘调整支持
-      minWidth: minimumWidth,
-      minHeight: minimumHeight,
+      minWidth: Math.min(minimumWidth, bounds.width),
+      minHeight: Math.min(minimumHeight, bounds.height),
       maxWidth: 800,
       maxHeight: 600,
       minimizable: false,
@@ -318,7 +495,17 @@ module.exports = function activate(api) {
     });
 
     restrictWindowNavigation(widgetWindow);
-    const releasePageInteractions = () => visibility.releaseHolds(transientInteractions);
+    widgetWindow.on('show', syncMouseEvents);
+    widgetWindow.on('hide', () => { menuWindow.close('owner-hidden'); syncMouseEvents(); });
+    const releasePageInteractions = () => {
+      menuWindow.close('owner-navigation');
+      visibility.releaseHolds(transientInteractions);
+      // 新页面尚未就绪或渲染进程退出时，不能遗留一个永久忽略鼠标的窗口。
+      rendererReady = false;
+      menuInteractionActive = false;
+      clickThroughRequested = false;
+      syncMouseEvents();
+    };
     widgetWindow.webContents.on('did-start-navigation', (details, _url, inPlace, mainFrame) => {
       const isMainFrame = details?.isMainFrame ?? mainFrame;
       const isSameDocument = details?.isSameDocument ?? inPlace;
@@ -326,13 +513,13 @@ module.exports = function activate(api) {
     });
     widgetWindow.webContents.on('render-process-gone', releasePageInteractions);
 
-    widgetWindow.setAlwaysOnTop(isAlwaysOnTop, 'floating');
+    widgetWindow.setAlwaysOnTop(isAlwaysOnTop, process.platform === 'win32' ? 'screen-saver' : 'floating');
 
     // Windows 平台：-webkit-app-region: drag 会使窗口区域被 Windows 判定为 HTCAPTION (非客户区)
     // 导致 DOM 无法接收到原生 contextmenu 事件。通过 Hook Win32 消息精准捕获右键动作：
     if (process.platform === 'win32' && typeof widgetWindow.hookWindowMessage === 'function') {
       const handleRightClick = () => {
-        if (isDisposed || !widgetWindow || widgetWindow.isDestroyed()) return;
+        if (isDisposed || clickThroughRequested || !widgetWindow || widgetWindow.isDestroyed()) return;
         try {
           const cursor = screen.getCursorScreenPoint();
           const bounds = widgetWindow.getBounds();
@@ -346,7 +533,7 @@ module.exports = function activate(api) {
     }
 
     widgetWindow.webContents.on('context-menu', (event, params) => {
-      if (isDisposed || !widgetWindow || widgetWindow.isDestroyed()) return;
+      if (isDisposed || clickThroughRequested || !widgetWindow || widgetWindow.isDestroyed()) return;
       widgetWindow.webContents.send('show-context-menu', { x: params.x, y: params.y });
     });
 
@@ -408,20 +595,38 @@ module.exports = function activate(api) {
   api.rpc.handle('syncState', async (state) => {
     if (isDisposed) return { ok: false };
     if (state && typeof state === 'object') {
-      if (Object.prototype.hasOwnProperty.call(state, 'songKey') && state.songKey !== latestState.songKey) {
+      if (state.connectionStatus === 'unavailable') {
+        clearTimeout(connectionTimer);
+        connectionTimer = null;
+        setConnectionStatus('unavailable');
+        if (widgetWindow && !widgetWindow.isDestroyed()) {
+          widgetWindow.webContents.send('widget-update', { connectionStatus: 'unavailable' });
+        }
+        return { ok: true };
+      }
+      const { connectionStatus: _reportedStatus, ...patch } = state;
+      const hasPlayback = typeof patch.songKey === 'string' && ['playing', 'paused', 'stopped', 'loading', 'buffering'].includes(patch.state) &&
+        Number.isFinite(patch.position) && Number.isFinite(patch.duration);
+      const reconnecting = hasPlayback && latestState.connectionStatus !== 'connected';
+      if (hasPlayback) {
+        setConnectionStatus('connected');
+        watchConnection();
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'songKey') && patch.songKey !== latestState.songKey) {
         latestState = { ...latestState, lyrics: null, currentLyric: '', songPersistentKey: '' };
       }
       latestState = {
         ...latestState,
-        ...state
+        ...patch
       };
       // 操作提示只用于本次广播，不在重开窗口时重新播报。
       delete latestState.wheelFeedback;
       if (widgetWindow && !widgetWindow.isDestroyed()) {
         // 完整快照只在打开窗口时发送，常规同步沿用客户端的增量载荷。
-        widgetWindow.webContents.send('widget-update', state);
+        widgetWindow.webContents.send('widget-update', { ...patch, connectionStatus: latestState.connectionStatus });
       }
-      visibility.updatePlayback(latestState.state, latestState.songKey);
+      if (hasPlayback) visibility.updatePlayback(latestState.state, latestState.songKey);
+      if (reconnecting && !Object.prototype.hasOwnProperty.call(patch, 'lyrics')) requestFullState();
     }
     return { ok: true };
   });
@@ -430,7 +635,7 @@ module.exports = function activate(api) {
 
   // 操作长轮询：支持批量拉取 pollActions 与单条兼容 pollAction
   api.rpc.handle('pollActions', () => {
-    if (isDisposed) return [];
+    if (isDisposed || latestState.connectionStatus !== 'connected') return [];
     if (pendingActionResolver) pendingActionResolver(null);
     if (actionQueue.length > 0) {
       const items = actionQueue.splice(0, actionQueue.length);
@@ -452,7 +657,7 @@ module.exports = function activate(api) {
   });
 
   api.rpc.handle('pollAction', () => {
-    if (isDisposed) return null;
+    if (isDisposed || latestState.connectionStatus !== 'connected') return null;
     if (pendingActionResolver) pendingActionResolver(null);
     if (actionQueue.length > 0) {
       return actionQueue.shift();
@@ -480,16 +685,28 @@ module.exports = function activate(api) {
       return { visible: false };
     } else {
       shouldShowWidget = true;
-    visibility.manual(true);
+      visibility.manual(true);
       await createOrShowWidgetWindow();
       return { visible: !isDisposed && shouldShowWidget };
     }
   });
 
+  api.rpc.handle('recoverWidget', recoverWidget);
+  api.rpc.handle('openWidgetSettings', async () => {
+    if (isDisposed) return { visible: false };
+    await createOrShowWidgetWindow();
+    if (isDisposed) return { visible: false };
+    createOrShowSettingsWindow();
+    return { visible: Boolean(settingsWindow && !settingsWindow.isDestroyed()) };
+  });
+
   // 2. 监听来自 widget.html 的 IPC 控制指令
   const onWidgetAction = (event, payload) => {
-    if (!isWidgetSender(event) || !payload || !['play', 'pause', 'toggle', 'next', 'previous', 'seek', 'volumeDelta', 'toggleLike', 'shuffle'].includes(payload.action)) return;
-    if (payload.action === 'seek' && !Number.isFinite(payload.value)) return;
+    if (!isWidgetSender(event) || latestState.connectionStatus !== 'connected' || !payload || !['play', 'pause', 'toggle', 'next', 'previous', 'seek', 'volumeDelta', 'toggleLike', 'shuffle'].includes(payload.action)) return;
+    if (payload.action === 'seek') {
+      if (!Number.isFinite(payload.value) || (typeof payload.songKey === 'string' && payload.songKey !== latestState.songKey)) return;
+      payload = { action: 'seek', value: payload.value, songKey: latestState.songKey };
+    }
     if (payload.action === 'volumeDelta') {
       if (!Number.isFinite(payload.value) || payload.value === 0) return;
       payload = { action: 'volumeDelta', value: Math.max(-.1, Math.min(.1, payload.value)) };
@@ -512,8 +729,26 @@ module.exports = function activate(api) {
     if (!isWidgetSender(event) || !payload || typeof payload !== 'object') return;
     const { cmd, value } = payload;
     if (cmd === 'renderer-ready') {
+      rendererReady = true;
       visibility.releaseHolds(transientInteractions);
+      deliverInteractionRecovery();
+      requestFullState();
+    } else if (cmd === 'open-menu') {
+      if (!rendererReady || !value || !Number.isFinite(value.x) || !Number.isFinite(value.y) ||
+          !value.presentation || typeof value.presentation !== 'object') return;
+      const bounds = widgetWindow.getBounds();
+      menuWindow.open({
+        point: { x: bounds.x + Math.max(0, Math.min(bounds.width, value.x)),
+          y: bounds.y + Math.max(0, Math.min(bounds.height, value.y)) },
+        modality: ['pointer', 'keyboard', 'touch'].includes(value.modality) ? value.modality : 'pointer',
+        presentation: value.presentation, pinned: isAlwaysOnTop
+      });
+    } else if (cmd === 'close-menu') {
+      menuWindow.close();
+    } else if (cmd === 'menu-state') {
+      if (value && typeof value === 'object') menuWindow.update(value);
     } else if (cmd === 'close') {
+      menuWindow.close('owner-hidden');
       shouldShowWidget = false;
       visibility.manual(false);
     } else if (cmd === 'open-settings') {
@@ -525,10 +760,21 @@ module.exports = function activate(api) {
     } else if (cmd === 'interaction') {
       if (value && ['pointer', 'menu', 'editor'].includes(value.kind) && typeof value.active === 'boolean') {
         visibility.hold(value.kind, value.active);
+        if (value.kind === 'menu') {
+          menuInteractionActive = value.active;
+          syncMouseEvents();
+        }
       }
+    } else if (cmd === 'click-through') {
+      if (typeof value !== 'boolean') return;
+      clickThroughRequested = value;
+      syncMouseEvents();
     } else if (cmd === 'pin') {
       isAlwaysOnTop = Boolean(value);
-      widgetWindow.setAlwaysOnTop(isAlwaysOnTop, 'floating');
+      widgetWindow.setAlwaysOnTop(isAlwaysOnTop, process.platform === 'win32' ? 'screen-saver' : 'floating');
+      raisePinnedWidget();
+    } else if (cmd === 'reset-position' || cmd === 'reset-size') {
+      restoreWindowBounds(cmd === 'reset-position' ? 'position' : 'size');
     } else if (cmd === 'layout') {
       if (!value || typeof value !== 'object') return;
       const anchorSource = pendingLayoutAnchor || widgetWindow.getBounds();
@@ -538,6 +784,7 @@ module.exports = function activate(api) {
         value.initialize === true
       );
       if (!bounds) return;
+      syncMouseEvents();
       if (value.initialize === true) {
         pendingLayoutAnchor = null;
         widgetWindow.setMinimumSize(...windowLayouts.minimumSize());
@@ -584,7 +831,7 @@ module.exports = function activate(api) {
       const shouldSave = value.save !== false;
       if (shouldSave) position = snappedPosition({ ...current, ...position });
       markTemporaryBounds();
-      widgetWindow.setPosition(position.x, position.y, false);
+      if (!moveWindow(widgetWindow, position.x, position.y, value.begin === true, shouldSave)) return;
       if (shouldSave) saveBounds(widgetWindow.getBounds(), 'position');
       notifyWindowState();
     } else if (cmd === 'set-bounds') {
@@ -632,13 +879,19 @@ module.exports = function activate(api) {
   };
   const onSettingsAction = (event, action) => {
     if (isSettingsSender(event) && widgetWindow && !widgetWindow.isDestroyed() && action && typeof action === 'object') {
-      widgetWindow.webContents.send('widget-settings-action', action);
+      if (action.type === 'recover-interaction') {
+        recoverWidget().catch(error => api.log.error('恢复小组件交互失败: ' + error.message));
+      } else if (action.type === 'window-reset' && ['position', 'size'].includes(action.value)) {
+        restoreWindowBounds(action.value);
+      } else widgetWindow.webContents.send('widget-settings-action', action);
     }
   };
   const onSettingsClose = event => {
     if (isSettingsSender(event)) settingsWindow.close();
   };
 
+  const onMenuEvent = (event, payload) => menuWindow.event(event, payload);
+  ipcMain.on('widget-menu-event', onMenuEvent);
   ipcMain.on('widget-action', onWidgetAction);
   ipcMain.on('widget-window-cmd', onWidgetWindowCmd);
   ipcMain.on('widget-request-snapshot', onWidgetRequestSnapshot);
@@ -646,7 +899,14 @@ module.exports = function activate(api) {
   ipcMain.on('widget-settings-ready', onSettingsReady);
   ipcMain.on('widget-settings-state', onSettingsState);
   ipcMain.on('widget-settings-action', onSettingsAction);
+  const onFontsRequest = (event) => {
+    if (!isWidgetSender(event) && !isSettingsSender(event)) return;
+    event.reply('widget-fonts', listSystemFonts());
+  };
   ipcMain.on('widget-settings-close', onSettingsClose);
+  ipcMain.on('widget-fonts-request', onFontsRequest);
+  app.on('browser-window-focus', onFoliaWindowFocus);
+  for (const event of ['display-added', 'display-removed', 'display-metrics-changed']) screen.on(event, onDisplaysChanged);
 
   // 默认在激活后自动展示小组件窗口
   const startupTimer = setTimeout(() => {
@@ -659,11 +919,17 @@ module.exports = function activate(api) {
   // 3. 模组停用时优雅释放
   api.onDispose(() => {
     isDisposed = true;
+    rightClickMonitor.dispose();
+    menuWindow.dispose();
+    ipcMain.removeListener('widget-menu-event', onMenuEvent);
+    app.removeListener('browser-window-focus', onFoliaWindowFocus);
+    for (const event of ['display-added', 'display-removed', 'display-metrics-changed']) screen.removeListener(event, onDisplaysChanged);
     visibility.dispose();
     stopBoundsAnimation();
     clearTimeout(suppressBoundsTimer);
     clearTimeout(startupTimer);
     clearTimeout(pollTimeoutTimer);
+    clearTimeout(connectionTimer);
     actionQueue.length = 0;
     ipcMain.removeListener('widget-action', onWidgetAction);
     ipcMain.removeListener('widget-window-cmd', onWidgetWindowCmd);
@@ -673,6 +939,7 @@ module.exports = function activate(api) {
     ipcMain.removeListener('widget-settings-state', onSettingsState);
     ipcMain.removeListener('widget-settings-action', onSettingsAction);
     ipcMain.removeListener('widget-settings-close', onSettingsClose);
+    ipcMain.removeListener('widget-fonts-request', onFontsRequest);
 
     if (pendingActionResolver) {
       pendingActionResolver(null);

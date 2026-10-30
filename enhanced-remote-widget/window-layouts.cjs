@@ -57,21 +57,33 @@ module.exports = function createWindowLayouts(api, screen) {
       width, height
     };
   }
-  function clampBounds(bounds) {
+  function clampBounds(bounds, workArea) {
     const [minimumWidth, minimumHeight] = minimumSize();
     const normalized = {
       x: Math.round(bounds.x), y: Math.round(bounds.y),
       width: Math.max(minimumWidth, Math.min(800, Math.round(bounds.width))),
       height: Math.max(minimumHeight, Math.min(600, Math.round(bounds.height)))
     };
-    const area = screen.getDisplayMatching(normalized).workArea;
-    const width = Math.min(normalized.width, Math.max(200, area.width));
-    const height = Math.min(normalized.height, Math.max(120, area.height));
+    const area = workArea || screen.getDisplayMatching(normalized).workArea;
+    const width = Math.min(normalized.width, Math.max(1, area.width));
+    const height = Math.min(normalized.height, Math.max(1, area.height));
     return {
       width, height,
       x: Math.max(area.x, Math.min(Math.round(bounds.x), area.x + area.width - width)),
       y: Math.max(area.y, Math.min(Math.round(bounds.y), area.y + area.height - height))
     };
+  }
+  function resetPosition(bounds) {
+    const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+    return clampBounds({ ...bounds,
+      x: area.x + (area.width - bounds.width) / 2,
+      y: area.y + (area.height - bounds.height) / 2
+    }, area);
+  }
+  function resetSize(bounds) {
+    const area = screen.getDisplayMatching(bounds).workArea;
+    const size = recommendedSize(activeLayout || 'poster', area);
+    return clampBounds(anchoredBounds(bounds, size, area), area);
   }
   function validBounds(value) {
     return value && ['x', 'y', 'width', 'height'].every(key => Number.isFinite(value[key]));
@@ -160,7 +172,7 @@ module.exports = function createWindowLayouts(api, screen) {
     return clampBounds(placed);
   }
   return {
-    load, remember, switchLayout, minimumSize, clampBounds,
+    load, remember, switchLayout, minimumSize, clampBounds, resetPosition, resetSize,
     defaultSize(layout) { return DEFAULT_SIZES[layout || activeLayout || 'capsule']; },
     snapshot(bounds) {
       let workArea = null;

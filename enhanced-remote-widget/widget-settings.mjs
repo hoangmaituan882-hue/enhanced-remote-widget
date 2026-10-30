@@ -1,4 +1,4 @@
-import { SETTINGS_KEY, MODES, CIRCUIT_MODE_INDEX, LAYOUTS, WHEEL_BEHAVIORS, FONT_SIZES, ALIGNMENTS, isLayout, clampOffset, serializeSettings, sizePresets } from './widget-state.mjs';
+import { SETTINGS_KEY, BOOLEAN_OPTIONS, MODES, CIRCUIT_MODE_INDEX, LAYOUTS, WHEEL_BEHAVIORS, FONT_SIZES, ALIGNMENTS, isLayout, clampOffset, serializeSettings, sizePresets } from './widget-state.mjs';
 import { applyLyricStyle, lyricStyleValue } from './widget-lyric-style.mjs';
 import { normalizeCircuitStyle, circuitInformation } from './widget-circuit-style.mjs';
 
@@ -6,7 +6,7 @@ export function createSettingsController({
   state, elements, sendWindowCommand, onChange, onBeforeChange = () => {},
 }) {
   const { card, badges, btnPin, btnLock, btnZen, checkPin, checkLock, checkZen,
-    setLock, setImmersive, setAutoShrink, setSongToast, setEdgeDock, checkEdgeDock, setKaraoke, setLyricTranslation, setLyricToolbar, setBadges, layoutPicker, sizePicker, fontPicker,
+    setLock, setImmersive, setAutoShrink, setSongToast, setSongTransition, setLyricTransition, setEdgeDock, checkEdgeDock, setKaraoke, setLyricTranslation, setLyricToolbar, setLyricClickThrough, setBadges, layoutPicker, sizePicker, fontPicker,
     themePicker, menuPaletteName, menuLayoutText, alignPicker, linesPicker,
     offsetRange, offsetValue, offsetEarlier, offsetLater, offsetReset } = elements;
   const disposers = [];
@@ -90,12 +90,15 @@ export function createSettingsController({
       if (input) input.checked = value;
     }
     if (setSongToast) setSongToast.checked = state.songToast;
+    if (setSongTransition) setSongTransition.checked = state.songTransition;
+    if (setLyricTransition) setLyricTransition.checked = state.lyricTransition;
     if (setAutoShrink) setAutoShrink.checked = state.autoHideWhenPaused;
     if (setEdgeDock) setEdgeDock.checked = state.edgeDock === true;
     if (checkEdgeDock) checkEdgeDock.style.display = state.edgeDock ? 'inline' : 'none';
     if (setKaraoke) setKaraoke.checked = state.wordKaraoke;
     if (setLyricTranslation) setLyricTranslation.checked = state.showLyricTranslation;
     if (setLyricToolbar) setLyricToolbar.checked = state.showLyricToolbar;
+    if (setLyricClickThrough) setLyricClickThrough.checked = state.lyricClickThrough;
     if (setBadges) setBadges.checked = state.showBadges;
     for (const [id, checked] of [
       ['menu-zen', state.isImmersive], ['menu-edge-dock', state.edgeDock],
@@ -150,7 +153,7 @@ export function createSettingsController({
     save();
   }
   function setOption(name, value) {
-    if (state[name] === value) return;
+    if (!BOOLEAN_OPTIONS.includes(name) || typeof value !== 'boolean' || state[name] === value) return;
     onBeforeChange();
     state[name] = value;
     applyUIState();
@@ -158,6 +161,14 @@ export function createSettingsController({
     if (name === 'autoHideWhenPaused') sendWindowCommand('auto-hide', value);
     if (name === 'songToast') sendWindowCommand('song-announcement', value);
     onChange(name);
+    save();
+  }
+  function recoverInteraction() {
+    onBeforeChange();
+    Object.assign(state, { isLocked: false, lyricClickThrough: false, edgeDock: false,
+      circuitEditing: false, showLyricToolbar: true });
+    applyUIState();
+    onChange('recover');
     save();
   }
   function setProfile(name, value) {
@@ -303,7 +314,7 @@ export function createSettingsController({
     const button = event.target.closest('[data-lines]');
     if (button) setProfile('lines', Number(button.dataset.lines));
   });
-  for (const [input, name] of [[setLock, 'isLocked'], [setImmersive, 'isImmersive'], [setAutoShrink, 'autoHideWhenPaused'], [setSongToast, 'songToast'], [setEdgeDock, 'edgeDock'], [setKaraoke, 'wordKaraoke'], [setLyricTranslation, 'showLyricTranslation'], [setLyricToolbar, 'showLyricToolbar'], [setBadges, 'showBadges']]) {
+  for (const [input, name] of [[setLock, 'isLocked'], [setImmersive, 'isImmersive'], [setAutoShrink, 'autoHideWhenPaused'], [setSongToast, 'songToast'], [setSongTransition, 'songTransition'], [setLyricTransition, 'lyricTransition'], [setEdgeDock, 'edgeDock'], [setKaraoke, 'wordKaraoke'], [setLyricTranslation, 'showLyricTranslation'], [setLyricToolbar, 'showLyricToolbar'], [setLyricClickThrough, 'lyricClickThrough'], [setBadges, 'showBadges']]) {
     if (input) bind(input, 'change', event => setOption(name, event.target.checked));
   }
   bind(offsetRange, 'input', event => setOffset(Number(event.target.value)));
@@ -315,7 +326,7 @@ export function createSettingsController({
   return {
     applyLayout, nextLayout, selectPalette, setOption, setProfile, setOffset, setSizePreset, setWheelBehavior, setLyricStyle, setCircuitTitlePosition,
     setCircuitStyle, setCircuitInformation, setCircuitEditing, resetCircuitStyle,
-    updateSong, updateWindow, applyUIState,
+    updateSong, updateWindow, applyUIState, recoverInteraction,
     cyclePalette: () => selectPalette((state.modeIndex + 1) % MODES.length),
     dispose() {
       flush();

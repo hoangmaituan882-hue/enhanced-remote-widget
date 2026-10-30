@@ -1,12 +1,13 @@
-// The menu owns interaction and motion; the widget owns window bounds and actions.
+// The menu owns interaction and motion; an optional popup owns screen placement.
 const EDGE = 8;
 const PRESS_DELAY = 520;
 const PRESS_TOLERANCE = 10;
 const clamp = (value, low, high) => Math.max(low, Math.min(value, high));
 
-export function createContextMenu({ menu, trigger, canOpen = () => true, onBeforeOpen, onOpen, onClose, onSelect }) {
+export function createContextMenu({ menu, trigger, canOpen = () => true, onBeforeOpen, onOpen, onClose, onSelect, external = null }) {
   const items = [...menu.querySelectorAll('[data-menu-item]')];
   const active = menu.querySelector('.menu-active');
+  menu.tabIndex = -1;
   let opened = false;
   let origin = null;
   let priorFocus = null;
@@ -20,7 +21,7 @@ export function createContextMenu({ menu, trigger, canOpen = () => true, onBefor
   let typeahead = '';
   let typeaheadTimer = 0;
 
-  const enabledItems = () => items.filter(item => !item.disabled && item.getAttribute('aria-disabled') !== 'true');
+  const enabledItems = () => items.filter(item => !item.hidden && !item.disabled && item.getAttribute('aria-disabled') !== 'true');
 
   function select(item, focus = false) {
     if (!item || item.disabled || item.getAttribute('aria-disabled') === 'true') return;
@@ -36,7 +37,7 @@ export function createContextMenu({ menu, trigger, canOpen = () => true, onBefor
   }
 
   function position() {
-    if (!opened || !origin) return;
+    if (external || !opened || !origin) return;
     const width = menu.offsetWidth;
     const height = menu.offsetHeight;
     const pointX = origin.x - window.screenX;
@@ -51,9 +52,10 @@ export function createContextMenu({ menu, trigger, canOpen = () => true, onBefor
     if (currentItem) select(currentItem);
   }
 
-  function close(reason = 'dismiss', selectedId = '') {
+  function close(reason = 'dismiss', selectedId = '', notify = true) {
     if (!opened) return;
     opened = false;
+    if (notify) external?.close(reason);
     cancelAnimationFrame(prepareFrame);
     cancelAnimationFrame(openFrame);
     menu.style.display = 'none';
@@ -70,7 +72,7 @@ export function createContextMenu({ menu, trigger, canOpen = () => true, onBefor
   }
 
   function open(x, y, modality = 'pointer') {
-    if (!canOpen() || !Number.isFinite(x) || !Number.isFinite(y)) return;
+    if (!canOpen(modality) || !Number.isFinite(x) || !Number.isFinite(y)) return;
     const screenOrigin = { x: window.screenX + x, y: window.screenY + y };
     const now = Date.now();
     if (opened && lastPoint && now - lastOpen < 100 && Math.hypot(lastPoint.x - x, lastPoint.y - y) < 16) return;
@@ -78,6 +80,16 @@ export function createContextMenu({ menu, trigger, canOpen = () => true, onBefor
     lastPoint = { x, y };
     cancelAnimationFrame(prepareFrame);
     cancelAnimationFrame(openFrame);
+    if (external) {
+      if (!opened) {
+        priorFocus = document.activeElement instanceof HTMLElement ? document.activeElement : trigger;
+        onBeforeOpen();
+        opened = true;
+        onOpen();
+      }
+      external.open({ x, y, modality });
+      return;
+    }
     if (!opened) {
       priorFocus = document.activeElement instanceof HTMLElement ? document.activeElement : trigger;
       onBeforeOpen();
@@ -97,7 +109,8 @@ export function createContextMenu({ menu, trigger, canOpen = () => true, onBefor
     const first = enabledItems()[0];
     if (first) {
       active.style.transition = 'none';
-      select(first, true);
+      if (modality === 'keyboard') select(first, true);
+      else menu.focus({ preventScroll: true });
     }
     prepareFrame = requestAnimationFrame(() => {
       if (!opened) return;
@@ -168,13 +181,14 @@ export function createContextMenu({ menu, trigger, canOpen = () => true, onBefor
     close('select', id);
     onSelect(id);
   }
+  function onScroll() { if (currentItem) select(currentItem); }
   function onMove(event) {
     const item = event.target.closest('[data-menu-item]');
     if (item && event.pointerType !== 'touch') select(item, true);
   }
   function onWindowKeyDown(event) {
     if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
-      if (!canOpen()) return;
+      if (!canOpen('keyboard')) return;
       event.preventDefault();
       if (!opened) open(window.innerWidth / 2, window.innerHeight / 2, 'keyboard');
     }
@@ -183,6 +197,7 @@ export function createContextMenu({ menu, trigger, canOpen = () => true, onBefor
   menu.addEventListener('keydown', onKeyDown);
   menu.addEventListener('click', onClick);
   menu.addEventListener('pointermove', onMove);
+  menu.addEventListener('scroll', onScroll);
   window.addEventListener('pointerdown', onPointerDown, true);
   window.addEventListener('pointermove', onPointerMove);
   window.addEventListener('pointerup', cancelPress);
@@ -193,12 +208,14 @@ export function createContextMenu({ menu, trigger, canOpen = () => true, onBefor
   window.addEventListener('blur', cancelPress);
   return {
     open, close, position,
+    closed(reason) { close(reason, '', false); },
     isOpen: () => opened,
     dispose() {
       close();
       menu.removeEventListener('keydown', onKeyDown);
       menu.removeEventListener('click', onClick);
       menu.removeEventListener('pointermove', onMove);
+      menu.removeEventListener('scroll', onScroll);
       window.removeEventListener('pointerdown', onPointerDown, true);
       window.removeEventListener('pointermove', onPointerMove);
       window.removeEventListener('pointerup', cancelPress);

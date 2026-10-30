@@ -43,8 +43,14 @@ export function createAdaptiveLayout({ card, state, motion, onMeasure, getEngage
     frame = 0;
     if (disposed) return;
     const width = card.clientWidth;
-    const height = card.clientHeight;
+    const pureLyrics = state.layout === 'lyrics';
+    // 收起只改变卡片高度，密度与字号仍以原生视口为基准，避免测量反馈和悬停抖动。
+    const bodyStyle = pureLyrics ? getComputedStyle(document.body) : null;
+    const height = pureLyrics ? Math.max(0, window.innerHeight - (parseFloat(bodyStyle.paddingTop) || 0)
+      - (parseFloat(bodyStyle.paddingBottom) || 0)) : card.clientHeight;
     const engaged = getEngaged();
+    const toolbarOpen = pureLyrics && state.showLyricToolbar && !state.lyricClickThrough && engaged;
+    card.classList.toggle('is-lyric-toolbar-open', Boolean(toolbarOpen));
     const quiet = state.isImmersive && !engaged;
     if (state.layout === 'circuit') {
       card.classList.toggle('is-engaged', engaged);
@@ -59,7 +65,6 @@ export function createAdaptiveLayout({ card, state, motion, onMeasure, getEngage
     const poster = state.layout === 'poster';
     const capsule = state.layout === 'capsule';
     const standard = state.layout === 'standard';
-    const pureLyrics = state.layout === 'lyrics';
     const wasWide = card.classList.contains('is-wide');
     const wide = poster && width >= (wasWide ? 352 : 368) && width / height >= (wasWide ? 1.20 : 1.28);
     const wasStacked = card.classList.contains('is-stacked');
@@ -98,12 +103,16 @@ export function createAdaptiveLayout({ card, state, motion, onMeasure, getEngage
     const translatedSong = state.showLyricTranslation && state.hasSongTranslation;
     card.classList.toggle('has-song-translation', Boolean(translatedSong));
     const lyricBodyHeight = pureLyrics ? Math.max(0, height - parseFloat(style.borderTopWidth) - parseFloat(style.borderBottomWidth)
-      - (state.showLyricToolbar ? (density === 'compact' ? 30 : 36) : 0)
-      - (state.showLyricToolbar ? (density === 'compact' ? 4 : 8) : 0)) : 0;
+      - (density === 'compact' ? 30 : 36)
+      - (density === 'compact' ? 4 : 8)) : 0;
     const preferredFont = pureLyrics && density === 'compact' ? Math.min(fontSize, 24) : fontSize;
-    const fittedFont = pureLyrics && translatedSong
-      ? Math.max(12, Math.min(preferredFont, Math.floor((lyricBodyHeight - 4) / (1.38 + .64 * 1.4) * 2) / 2))
-      : preferredFont;
+    // 字号跟随窗口高度：以 160px 的推荐高度为 1 倍，最多缩到 0.6 倍、放大到 1.8 倍，
+    // 再按当前可用高度收紧，避免翻译或矮窗口裁切。
+    const lyricScale = pureLyrics ? Math.max(.6, Math.min(1.8, height / 160)) : 1;
+    const scaledFont = Math.max(12, Math.round(preferredFont * lyricScale * 2) / 2);
+    const fitFactor = 1.38 + (translatedSong ? .64 * 1.4 : 0);
+    const fitFont = Math.max(12, Math.floor(Math.max(0, lyricBodyHeight - 4) / fitFactor * 2) / 2);
+    const fittedFont = pureLyrics ? Math.min(scaledFont, fitFont) : preferredFont;
     const translationSize = pureLyrics ? Math.max(10, Math.min(20, fittedFont * .64))
       : Math.max(11, Math.min(16, fontSize * .78));
     token('--fitted-lyric-size', fittedFont + 'px');
@@ -192,7 +201,11 @@ export function createAdaptiveLayout({ card, state, motion, onMeasure, getEngage
       'has-artist-room': hasArtist, 'has-album-room': hasAlbum, 'has-track-room': hasTrack,
       'has-lyric-room': hasLyric, 'has-translation-room': hasTranslation, 'has-next-room': hasNext, 'has-time-room': hasTime
     })) card.classList.toggle(name, Boolean(value));
-    for (const element of card.querySelectorAll('.row-bottom, .lyric-toolbar')) element.inert = quiet || element.hidden;
+    for (const element of card.querySelectorAll('.row-bottom, .lyric-toolbar')) {
+      const toolbar = element.classList.contains('lyric-toolbar');
+      element.inert = toolbar ? !toolbarOpen : quiet || element.hidden || (pureLyrics && state.lyricClickThrough);
+      if (toolbar) element.setAttribute('aria-hidden', String(!toolbarOpen));
+    }
     token('--cover-size', Math.max(0, coverWidth) + 'px');
     token('--cover-height', Math.max(0, coverHeight) + 'px');
     if (!lastSize) {

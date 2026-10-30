@@ -1,6 +1,10 @@
 import { normalizeLyricStyle } from './widget-lyric-style.mjs';
 import { normalizeCircuitStyle } from './widget-circuit-style.mjs';
 export const SETTINGS_KEY = 'folia_enhanced_widget_config';
+export const BOOLEAN_OPTIONS = Object.freeze([
+  'isPinned', 'isLocked', 'isImmersive', 'autoHideWhenPaused', 'songToast', 'songTransition', 'lyricTransition',
+  'edgeDock', 'wordKaraoke', 'showLyricTranslation', 'showLyricToolbar', 'lyricClickThrough', 'showBadges'
+]);
 export const WHEEL_BEHAVIORS = Object.freeze({
   volume: { name: '调整音量', description: '向上增大音量，向下减小音量，每次调整 5%。' },
   seek: { name: '调整歌曲进度', description: '向上快进 5 秒，向下后退 5 秒。' },
@@ -106,21 +110,25 @@ export function createWidgetState() {
     restoreExpandedBounds: saved.autoShrink === true && typeof saved.autoHideWhenPaused !== 'boolean',
     autoHideWhenPaused: typeof saved.autoHideWhenPaused === 'boolean' ? saved.autoHideWhenPaused : saved.autoShrink === true,
     songToast: saved.songToast === true, isAnnouncing: false,
+    songTransition: saved.songTransition !== false,
+    lyricTransition: saved.lyricTransition !== false,
     edgeDock: saved.edgeDock === true,
     wordKaraoke: saved.enableWordKaraoke !== false,
     showLyricTranslation: saved.showLyricTranslation !== false,
     showLyricToolbar: saved.showLyricToolbar !== false,
+    lyricClickThrough: saved.lyricClickThrough === true,
     showBadges: saved.showBadges !== false,
     wheelBehavior: Object.prototype.hasOwnProperty.call(WHEEL_BEHAVIORS, saved.wheelBehavior) ? saved.wheelBehavior : 'seek',
     modeIndex,
     currentDuration: 0, currentPosition: 0, isPlaying: false, isScrubbing: false,
+    connectionStatus: 'connecting',
     songPersistentKey: '', lyricOffsetMs: 0, windowBounds: null, windowWorkArea: null
   };
 }
 
 export function serializeSettings(state) {
   return JSON.stringify({
-    schemaVersion: 10,
+    schemaVersion: 11,
     layoutMode: state.layout,
     profiles: state.profiles,
     songOffsets: [...state.offsets.entries()].slice(-256),
@@ -129,10 +137,13 @@ export function serializeSettings(state) {
     isImmersive: state.isImmersive,
     autoHideWhenPaused: state.autoHideWhenPaused,
     songToast: state.songToast,
+    songTransition: state.songTransition,
+    lyricTransition: state.lyricTransition,
     edgeDock: state.edgeDock,
     enableWordKaraoke: state.wordKaraoke,
     showLyricTranslation: state.showLyricTranslation,
     showLyricToolbar: state.showLyricToolbar,
+    lyricClickThrough: state.lyricClickThrough,
     showBadges: state.showBadges,
     wheelBehavior: state.wheelBehavior,
     lyricStyle: state.lyricStyle,

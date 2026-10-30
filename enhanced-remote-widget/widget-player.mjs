@@ -9,15 +9,33 @@ import { createEdgeDockController } from './widget-edge-dock.mjs';
 import { createContextMenu } from './widget-context-menu.mjs';
 import { createCircuitCard } from './widget-circuit.mjs';
 import { createSongAnnouncement } from './widget-announcement.mjs';
+import { connectionMessage, interactionMessage } from './widget-messages.mjs';
 const nativeBridge = window.foliaWidget || null;
 const ipcRenderer = nativeBridge || { on() {}, send() {} };
 const state = createWidgetState();
+state.connectionStatus = nativeBridge ? 'connecting' : 'preview';
 let hoverTimer = null;
 let renderedState = {};
 let renderedCoverUrl = null;
 const $ = (id) => document.getElementById(id);
 
 const card = $('widget-card');
+const silentInputEvents = ['pointerdown', 'pointerup', 'pointermove', 'click', 'dblclick', 'auxclick', 'wheel', 'keydown', 'keyup', 'contextmenu'];
+function isClickThroughEnabled() { return state.layout === 'lyrics' && state.lyricClickThrough; }
+function blockSilentInput(event) {
+  if (!isClickThroughEnabled() || menu.contains(event.target)) return;
+  // The context menu is the only interactive surface while lyrics are click-through.
+  if (event.button === 2 && (!event.pointerType || event.pointerType === 'mouse') &&
+      ['pointerdown', 'pointerup', 'contextmenu'].includes(event.type)) return;
+  if (event.type === 'click' && contextMenu?.isOpen()) closeMenu();
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}
+for (const type of silentInputEvents) window.addEventListener(type, blockSilentInput, { capture: true, passive: false });
+// Prevent Chromium's native image drag/export, including dynamically added images.
+document.addEventListener('dragstart', event => {
+  if (event.target.closest?.('img')) event.preventDefault();
+}, true);
 const cover = $('cover');
 const coverImg = $('cover-img');
 const coverFallback = $('cover-fallback');
@@ -59,6 +77,7 @@ const btnLyricNext = $('lyric-next');
 const btnLyricLock = $('lyric-lock');
 const btnLyricSettings = $('lyric-settings');
 const btnLyricHide = $('lyric-hide');
+const btnLyricLike = $('lyric-like');
 
 const sheet = $('sheet');
 const btnSheetDone = $('btn-sheet-done');
@@ -66,10 +85,13 @@ const setLock = $('set-lock');
 const setImmersive = $('set-immersive');
 const setAutoShrink = $('set-auto-shrink');
 const setSongToast = $('set-song-toast');
+const setSongTransition = $('set-song-transition');
+const setLyricTransition = $('set-lyric-transition');
 const setEdgeDock = $('set-edge-dock');
 const setKaraoke = $('set-karaoke');
 const setLyricTranslation = $('set-lyric-translation');
 const setLyricToolbar = $('set-lyric-toolbar');
+const setLyricClickThrough = $('set-lyric-click-through');
 const setBadges = $('set-badges');
 const layoutPicker = $('layout-picker');
 const sizePicker = $('size-picker');
@@ -100,7 +122,7 @@ const offsetReset = $('offset-reset');
 const elements = { card, badges, cover, coverImg, coverFallback, karaokeViewport, karaokeLine, karaokeNext, karaokeTranslation,
   timeCurrent, timeDuration, trackFill, posterLine1, posterLine2, posterTime, posterTranslation,
   btnPin, btnLock, btnZen, checkPin, checkLock, checkZen, checkEdgeDock,
-  setLock, setImmersive, setAutoShrink, setSongToast, setEdgeDock, setKaraoke, setLyricTranslation, setLyricToolbar, setBadges,
+  setLock, setImmersive, setAutoShrink, setSongToast, setSongTransition, setLyricTransition, setEdgeDock, setKaraoke, setLyricTranslation, setLyricToolbar, setLyricClickThrough, setBadges,
   layoutPicker, sizePicker, fontPicker, themePicker, menuPaletteName, menuLayoutText,
   alignPicker, linesPicker, offsetRange, offsetValue, offsetEarlier, offsetLater, offsetReset };
 const motion = createMotionController(card);
@@ -137,7 +159,9 @@ let windowResizeTimer = null;
 let ignoreHoverUntilLeave = false;
 let initialWindowStateReceived = false;
 let cancelWindowGesture = null;
+let cancelScrub = null;
 let isWindowDragging = false;
+let lastClickThrough = null;
 let circuit = null;
 let circuitPositionRequestId = null;
 function beginWindowResizeTransition() {
@@ -153,6 +177,7 @@ function beginWindowResizeTransition() {
   }, 280);
 }
 function isImmersionEngaged() {
+  if (isClickThroughEnabled()) return card.classList.contains('has-overlay');
   const pointerEngaged = !ignoreHoverUntilLeave &&
     (isPointerInsideCard || card.classList.contains('is-hovered') || card.matches(':hover'));
   const keyboardEngaged = document.hasFocus() && card.contains(document.activeElement);
@@ -168,13 +193,13 @@ const announcement = createSongAnnouncement({ state, onChange() {
 
 const settings = createSettingsController({
   state, elements, sendWindowCommand,
-  onBeforeChange() { cancelWindowGesture?.(); motion.prepare(); },
+  onBeforeChange() { cancelScrub?.(); cancelWindowGesture?.(); lyrics.stopTransition(); motion.cancelSong(); motion.prepare(); },
   onChange(reason) {
     if (['theme', 'layout', 'circuitTitlePosition', 'circuitStyle', 'circuitEditing'].includes(reason)) {
       circuit?.sync();
       tooltips.hideAll();
     }
-    if (reason === 'isLocked' || reason === 'showLyricToolbar') {
+    if (reason === 'isLocked' || reason === 'showLyricToolbar' || reason === 'recover') {
       state.isLocked ? lockIcon.showB() : lockIcon.showA();
       syncLyricToolbar();
     }
@@ -205,12 +230,23 @@ const settings = createSettingsController({
     }
     if (reason === 'circuitEditing' || reason === 'layout') sendWindowCommand('interaction', { kind: 'editor', active: state.circuitEditing });
     if (reason === 'size') beginWindowResizeTransition();
+    if (['lyricClickThrough', 'layout', 'showLyricToolbar', 'recover'].includes(reason)) {
+      syncClickThrough();
+      edgeDock.refresh();
+    }
+    if (reason === 'recover') {
+      closeMenu();
+      state.keyboardWake = true;
+      edgeDock.disengage();
+      sendWindowCommand('interaction', { kind: 'editor', active: false });
+    }
     if (reason === 'edgeDock') {
       edgeDock.refresh();
     }
     lyrics.invalidate(reason);
     adaptiveLayout.schedule();
     publishSettingsSnapshot();
+    syncMenuPresentation();
   }
 });
 circuit = createCircuitCard({
@@ -232,8 +268,10 @@ function publishSettingsSnapshot() {
   ipcRenderer.send('widget-settings-state', {
     layout: state.layout, profiles: state.profiles, modeIndex: state.modeIndex,
     isPinned: state.isPinned, isLocked: state.isLocked, isImmersive: state.isImmersive, autoHideWhenPaused: state.autoHideWhenPaused,
-    songToast: state.songToast, edgeDock: state.edgeDock, wordKaraoke: state.wordKaraoke,
+    songToast: state.songToast, songTransition: state.songTransition, lyricTransition: state.lyricTransition,
+    edgeDock: state.edgeDock, wordKaraoke: state.wordKaraoke,
     showLyricToolbar: state.showLyricToolbar, showLyricTranslation: state.showLyricTranslation,
+    lyricClickThrough: state.lyricClickThrough,
     showBadges: state.showBadges, lyricOffsetMs: state.lyricOffsetMs,
     wheelBehavior: state.wheelBehavior,
     lyricStyle: state.lyricStyle,
@@ -247,7 +285,11 @@ ipcRenderer.on('widget-settings-request-state', publishSettingsSnapshot);
 ipcRenderer.on('widget-settings-action', (_event, action) => {
   if (!action || typeof action !== 'object') return;
   const { type, value } = action;
-  if (type === 'layout') settings.applyLayout(value);
+  if (type === 'click-through-unavailable') {
+    settings.setOption('lyricClickThrough', false);
+    showWheelFeedback(interactionMessage('clickThroughUnavailable', document.documentElement.lang));
+  } else if (type === 'recover-interaction') settings.recoverInteraction();
+  else if (type === 'layout') settings.applyLayout(value);
   else if (type === 'theme') settings.selectPalette(value);
   else if (type === 'size' && value && typeof value === 'object') settings.setSizePreset(value.width, value.height);
   else if (type === 'profile' && value && typeof value === 'object') settings.setProfile(value.name, value.value);
@@ -265,7 +307,7 @@ ipcRenderer.on('widget-settings-action', (_event, action) => {
     publishSettingsSnapshot();
   }
   else if (type === 'option' && value && typeof value === 'object' &&
-    ['isPinned', 'isLocked', 'isImmersive', 'autoHideWhenPaused', 'songToast', 'edgeDock', 'wordKaraoke', 'showLyricTranslation', 'showLyricToolbar', 'showBadges'].includes(value.name) && typeof value.value === 'boolean') {
+    typeof value.name === 'string' && typeof value.value === 'boolean') {
     settings.setOption(value.name, value.value);
   } else if (type === 'offset') settings.setOffset(value);
   publishSettingsSnapshot();
@@ -275,10 +317,42 @@ function measureToolbar() {
   if (card.style.getPropertyValue('--toolbar-w') !== value) card.style.setProperty('--toolbar-w', value);
 }
 
+function syncConnectionUI() {
+  const connected = state.connectionStatus === 'connected';
+  const status = $('connection-status');
+  const text = connectionMessage(state.connectionStatus, document.documentElement.lang || 'en');
+  if (status.textContent !== text) status.textContent = text;
+  status.hidden = connected;
+  card.classList.toggle('is-disconnected', !connected);
+  for (const id of ['btn-play', 'btn-prev', 'btn-next', 'btn-like', 'btn-shuffle', 'btn-poster-action',
+    'lyric-play', 'lyric-prev', 'lyric-next', 'lyric-like', 'menu-play', 'menu-prev', 'menu-next', 'menu-like']) {
+    const button = $(id);
+    button.disabled = !connected || (id.endsWith('like') && renderedState.canLike === false);
+  }
+  cover.setAttribute('aria-disabled', String(!connected));
+  progress.setAttribute('aria-disabled', String(!connected));
+}
+
 function render(patch) {
   if (!patch || typeof patch !== 'object') return;
+  if (['connecting', 'connected', 'unavailable', 'stale'].includes(patch.connectionStatus) && patch.connectionStatus !== state.connectionStatus) {
+    state.connectionStatus = patch.connectionStatus;
+    if (state.connectionStatus !== 'connected') {
+      cancelScrub?.();
+      clearTimeout(coverClickTimer);
+      coverClickTimer = null;
+      lyrics.suspend();
+      motion.cancelSong();
+    }
+  }
   if (typeof patch.wheelFeedback === 'string') showWheelFeedback(patch.wheelFeedback);
   const songChanged = Object.prototype.hasOwnProperty.call(patch, 'songKey') && patch.songKey !== renderedState.songKey;
+  if (songChanged) {
+    cancelScrub?.();
+    lyrics.stopTransition();
+    if (state.connectionStatus === 'connected' && renderedState.songKey && patch.songKey && state.songTransition) motion.prepareSong();
+    else motion.cancelSong();
+  }
   if (songChanged) {
     renderedState = { ...renderedState, lyrics: null, currentLyric: '', songPersistentKey: '' };
   }
@@ -310,7 +384,7 @@ function render(patch) {
     coverFallback.style.display = coverUrl ? 'none' : 'grid';
     extractTint(coverUrl);
   }
-  const nextPlaying = data.state === 'playing';
+  const nextPlaying = state.connectionStatus === 'connected' && data.state === 'playing';
   if (nextPlaying !== state.isPlaying) {
     state.isPlaying = nextPlaying;
     card.classList.toggle('is-playing', nextPlaying);
@@ -344,25 +418,36 @@ function render(patch) {
   }
   if (menuLikeText) menuLikeText.textContent = data.liked ? '取消喜爱' : '添加到喜爱';
   btnLike.disabled = data.canLike === false;
+  btnLyricLike.classList.toggle('liked', Boolean(data.liked));
+  btnLyricLike.disabled = data.canLike === false;
   if (!state.isScrubbing) {
-    state.currentDuration = Number.isFinite(data.duration) ? Math.max(0, data.duration) : 0;
-    state.currentPosition = Number.isFinite(data.position) ? Math.max(0, data.position) : 0;
+    if (state.connectionStatus === 'connected' || Number.isFinite(patch.position)) {
+      state.currentDuration = Number.isFinite(data.duration) ? Math.max(0, data.duration) : 0;
+      state.currentPosition = Number.isFinite(data.position) ? Math.max(0, data.position) : 0;
+    }
     timeCurrent.textContent = formatTime(state.currentPosition);
     timeDuration.textContent = state.layout === 'capsule' ? '-' + formatTime(Math.max(0, state.currentDuration - state.currentPosition)) : formatTime(state.currentDuration);
     trackFill.style.width = state.currentDuration > 0 ? Math.min(100, state.currentPosition / state.currentDuration * 100) + '%' : '0%';
   }
   settings.updateSong(data.songPersistentKey);
   lyrics.update(patch);
+  syncConnectionUI();
+  syncMenuPresentation();
+  if (state.connectionStatus === 'connected') motion.commitSong(hasLyrics);
 }
 
 function sendAction(action, value) {
-  ipcRenderer.send('widget-action', { action, value });
+  if (state.connectionStatus !== 'connected') return;
+  ipcRenderer.send('widget-action', { action, value, ...(action === 'seek' ? { songKey: renderedState.songKey } : {}) });
 }
 
 function syncLyricToolbar() {
-  if (!state.showLyricToolbar && lyricToolbar.contains(document.activeElement)) document.activeElement.blur();
+  const silent = isClickThroughEnabled();
+  if ((!state.showLyricToolbar || silent) && lyricToolbar.contains(document.activeElement)) document.activeElement.blur();
   lyricToolbar.hidden = !state.showLyricToolbar;
-  lyricToolbar.inert = !state.showLyricToolbar || card.classList.contains('is-quiet');
+  const open = state.layout === 'lyrics' && !silent && state.showLyricToolbar && card.classList.contains('is-lyric-toolbar-open');
+  lyricToolbar.inert = !open;
+  lyricToolbar.setAttribute('aria-hidden', String(!open));
   btnLyricLock.classList.toggle('active', state.isLocked);
   btnLyricLock.setAttribute('aria-pressed', String(state.isLocked));
   btnLyricLock.title = state.isLocked ? '解除位置锁定' : '锁定位置';
@@ -372,12 +457,21 @@ function syncLyricToolbar() {
 // ==========================================================================
 // 播放控制
 // ==========================================================================
+// Dedicated controls keep their own clicks and gestures; ordinary content shares playback and window movement.
+const contentControls = 'button, a, input, select, textarea, label, [role="button"], [role="slider"], [contenteditable], #cover, #progress, .grip, .sheet, .menu, .edge-peek-tab';
+card.addEventListener('click', event => {
+  if (event.defaultPrevented || event.button !== 0 || isClickThroughEnabled() || state.connectionStatus !== 'connected') return;
+  if (state.circuitEditing || state.isScrubbing || cancelWindowGesture || sheet.classList.contains('active') || contextMenu?.isOpen()) return;
+  if (event.target.closest(contentControls)) return;
+  sendAction('toggle');
+});
 btnPlay.addEventListener('click', () => sendAction('toggle'));
 btnPrev.addEventListener('click', () => sendAction('previous'));
 btnNext.addEventListener('click', () => sendAction('next'));
 btnLyricPrev.addEventListener('click', () => sendAction('previous'));
 btnLyricPlay.addEventListener('click', () => sendAction('toggle'));
 btnLyricNext.addEventListener('click', () => sendAction('next'));
+btnLyricLike.addEventListener('click', () => sendAction('toggleLike'));
 btnLyricLock.addEventListener('click', () => settings.setOption('isLocked', !state.isLocked));
 btnLyricSettings.addEventListener('click', openSheet);
 btnLyricHide.addEventListener('click', () => sendWindowCommand('close'));
@@ -399,44 +493,54 @@ function scrubTo(e) {
   return time;
 }
 
-progress.addEventListener('mousedown', (e) => {
-  if (e.button !== 0) return;
-  if (state.currentDuration <= 0) return;
+progress.addEventListener('pointerdown', (event) => {
+  if (isClickThroughEnabled() || state.connectionStatus !== 'connected' || event.button !== 0 || !event.isPrimary || state.currentDuration <= 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+  cancelScrub?.();
+  cancelWindowGesture?.();
+  const pointerId = event.pointerId;
+  const startingSong = renderedState.songKey;
+  let finished = false;
   state.isScrubbing = true;
-  adaptiveLayout.schedule();
   progress.classList.add('is-scrubbing');
-  scrubTo(e);
-
-  const onMove = (ev) => {
-    if (state.isScrubbing) scrubTo(ev);
-  };
-  const cleanup = () => {
-    window.removeEventListener('mousemove', onMove);
-    window.removeEventListener('mouseup', onUp);
-    window.removeEventListener('blur', onCancel);
-  };
-  const onCancel = () => {
+  scrubTo(event);
+  adaptiveLayout.schedule();
+  const finish = (event, commit) => {
+    if (finished || (event?.pointerId !== undefined && event.pointerId !== pointerId)) return;
+    finished = true;
+    const time = commit && startingSong === renderedState.songKey ? scrubTo(event) : null;
     state.isScrubbing = false;
     progress.classList.remove('is-scrubbing');
-    adaptiveLayout.schedule();
-    cleanup();
-  };
-  const onUp = (ev) => {
-    if (state.isScrubbing) {
-      state.isScrubbing = false;
-      adaptiveLayout.schedule();
-      progress.classList.remove('is-scrubbing');
-      const time = scrubTo(ev);
-      if (typeof time === 'number') {
-        sendAction('seek', time);
-        lyrics.seek(time);
-      }
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('pointercancel', onCancel);
+    window.removeEventListener('blur', onBlur);
+    progress.removeEventListener('lostpointercapture', onCancel);
+    if (cancelScrub === onBlur) cancelScrub = null;
+    if (progress.hasPointerCapture(pointerId)) progress.releasePointerCapture(pointerId);
+    if (typeof time === 'number') {
+      sendAction('seek', time);
+      lyrics.seek(time);
     }
-    cleanup();
+    adaptiveLayout.schedule();
   };
-  window.addEventListener('mousemove', onMove);
-  window.addEventListener('mouseup', onUp);
-  window.addEventListener('blur', onCancel);
+  const onMove = event => {
+    if (event.pointerId !== pointerId) return;
+    if (event.pointerType === 'mouse' && event.buttons === 0) { finish(event, false); return; }
+    scrubTo(event);
+  };
+  const onUp = event => finish(event, true);
+  const onCancel = event => finish(event, false);
+  const onBlur = () => finish(null, false);
+  cancelScrub = onBlur;
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+  window.addEventListener('pointercancel', onCancel);
+  window.addEventListener('blur', onBlur);
+  progress.addEventListener('lostpointercapture', onCancel);
+  // 捕获失败时仍通过 window 监听清理；失焦、换歌、布局变化也走同一个结束入口。
+  try { progress.setPointerCapture(pointerId); } catch {}
 });
 
 let wheelFeedbackTimer = null;
@@ -454,9 +558,9 @@ let lastWheelAt = -Infinity;
 let lastWheelActionAt = -Infinity;
 let lastWheelBehavior = '';
 card.addEventListener('wheel', (e) => {
-  if (sheet.classList.contains('active')) return;
-  if (menu.style.display === 'flex' || state.isScrubbing || cancelWindowGesture) return;
-  if (e.target.closest('#sheet, #menu, input, select, textarea')) return;
+  if (isClickThroughEnabled() || state.connectionStatus !== 'connected' || sheet.classList.contains('active')) return;
+  if (contextMenu?.isOpen() || state.circuitEditing || state.isScrubbing || cancelWindowGesture) return;
+  if (e.target.closest('#sheet, #menu, input, select, textarea, [contenteditable]')) return;
   if (e.ctrlKey || e.metaKey || e.altKey || !e.deltaY || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
   e.preventDefault();
   const now = performance.now();
@@ -490,7 +594,7 @@ card.addEventListener('wheel', (e) => {
   trackFill.style.width = (target / state.currentDuration) * 100 + '%';
   lyrics.requestFrame();
   showWheelFeedback(`进度 ${formatTime(target)}`);
-}, { passive: false });
+}, { capture: true, passive: false });
 
 sheet.addEventListener('wheel', (e) => e.stopPropagation(), { passive: false });
 menu.addEventListener('wheel', (e) => e.stopPropagation(), { passive: false });
@@ -505,7 +609,7 @@ btnPalette.addEventListener('click', () => settings.cyclePalette());
 btnClose.addEventListener('click', () => sendWindowCommand('close'));
 let coverClickTimer = null;
 cover.addEventListener('click', () => {
-  if (state.layout === 'lyrics') return;
+  if (state.layout === 'lyrics' || state.connectionStatus !== 'connected') return;
   if (coverClickTimer) {
     clearTimeout(coverClickTimer);
     coverClickTimer = null;
@@ -530,7 +634,7 @@ cover.addEventListener('keydown', event => {
 let isPointerInsideCard = false;
 
 function handleMouseEnter() {
-  if (ignoreHoverUntilLeave) return;
+  if (isClickThroughEnabled() || ignoreHoverUntilLeave) return;
   isPointerInsideCard = true;
   if (hoverTimer) {
     clearTimeout(hoverTimer);
@@ -552,7 +656,7 @@ function handleMouseLeave(e) {
   if (hoverTimer) clearTimeout(hoverTimer);
   hoverTimer = setTimeout(() => {
     hoverTimer = null;
-    if (isPointerInsideCard || menu.style.display === 'flex') return;
+    if (isPointerInsideCard || contextMenu?.isOpen()) return;
     if (card.matches(':hover')) {
       isPointerInsideCard = true;
       return;
@@ -565,7 +669,7 @@ function handleMouseLeave(e) {
 
 card.addEventListener('mouseenter', handleMouseEnter);
 card.addEventListener('mousemove', () => {
-  if (ignoreHoverUntilLeave) return;
+  if (isClickThroughEnabled() || ignoreHoverUntilLeave) return;
   if (!isPointerInsideCard || !card.classList.contains('is-hovered')) {
     handleMouseEnter();
   }
@@ -580,7 +684,7 @@ card.addEventListener('focusout', () => {
   });
 });
 window.addEventListener('focus', () => { adaptiveLayout.schedule(); reconcileImmersive(); });
-window.addEventListener('blur', () => { state.keyboardWake = false; closeMenu(); reconcileImmersive(); });
+window.addEventListener('blur', () => { state.keyboardWake = false; if (!detachedMenu) closeMenu(); reconcileImmersive(); });
 if (card.matches(':hover')) handleMouseEnter();
 
 // ==========================================================================
@@ -592,63 +696,42 @@ btnSettings.addEventListener('click', openSheet);
 // ==========================================================================
 // 右键菜单
 // ==========================================================================
-let preMenuBounds = null;
 let contextMenu = null;
-function prepareMenuWindow() {
-  cancelWindowGesture?.();
-  // A short lyrics window needs temporary room for the menu; its profile is untouched.
-  if (window.innerHeight < 340 && !preMenuBounds) {
-    preMenuBounds = {
-      x: window.screenX,
-      y: window.screenY,
-      width: window.innerWidth,
-      height: window.innerHeight
-    };
-    const workArea = state.windowWorkArea || {
-      y: window.screen.availTop || 0,
-      height: window.screen.availHeight || 1080
-    };
-    const targetH = 350;
-    const bottom = workArea.y + workArea.height;
-    const targetY = Math.max(workArea.y, Math.min(preMenuBounds.y, bottom - targetH - 20));
-
-    sendWindowCommand('set-bounds', {
-      x: preMenuBounds.x,
-      y: targetY,
-      width: Math.max(preMenuBounds.width, 240),
-      height: targetH,
-      animate: false,
-      save: false
-    });
-  }
+const detachedMenu = nativeBridge?.role === 'player';
+function prepareMenuWindow() { cancelScrub?.(); cancelWindowGesture?.(); tooltips.hideAll(); }
+function menuPresentation() {
+  return {
+    classes: [...document.body.classList].filter(name => name.startsWith('mode-')),
+    playing: state.isPlaying,
+    text: Object.fromEntries(['menu-layout-text', 'menu-palette-text', 'menu-palette-name',
+      'menu-like-text', 'menu-disable-click-through-text'].map(id => [id, $(id).textContent])),
+    items: [...menu.querySelectorAll('[data-menu-item]')].map(item => ({
+      id: item.id, hidden: item.hidden, disabled: item.disabled,
+      checked: item.getAttribute('aria-checked'), label: item.dataset.label || '',
+      ariaLabel: item.getAttribute('aria-label'), title: item.title || '',
+      liked: item.classList.contains('liked')
+    }))
+  };
+}
+function syncMenuPresentation() {
+  if (detachedMenu && contextMenu?.isOpen()) sendWindowCommand('menu-state', menuPresentation());
 }
 
 function afterMenuClose({ selectedId }) {
   updateOverlayState();
-  const isHover = !ignoreHoverUntilLeave && (isPointerInsideCard || card.matches(':hover'));
+  const isHover = !isClickThroughEnabled() && !ignoreHoverUntilLeave && (isPointerInsideCard || card.matches(':hover'));
   card.classList.toggle('is-hovered', isHover);
-  if (preMenuBounds) {
-    const target = { ...preMenuBounds };
-    preMenuBounds = null;
-    sendWindowCommand('set-bounds', {
-      x: target.x,
-      y: target.y,
-      width: target.width,
-      height: target.height,
-      animate: false,
-      save: false
-    });
-  }
   if (selectedId !== 'menu-zen' && selectedId !== 'menu-layout' && selectedId !== 'menu-settings') reconcileImmersive();
 }
 function openMenu(x, y, modality = 'pointer') { cancelWindowGesture?.(); contextMenu?.open(x, y, modality); }
 function closeMenu() { contextMenu?.close(); }
 
 function updateOverlayState() {
-  const active = menu.style.display === 'flex';
+  const active = Boolean(contextMenu?.isOpen());
   if (card.classList.contains('has-overlay') === active) return;
   card.classList.toggle('has-overlay', active);
   sendWindowCommand('interaction', { kind: 'menu', active });
+  syncClickThrough();
   adaptiveLayout.schedule();
 }
 
@@ -661,6 +744,7 @@ ipcRenderer.on('show-context-menu', (_event, coords) => {
 window.addEventListener('contextmenu', (e) => {
   e.preventDefault();
   if (sheet.classList.contains('active') || menu.contains(e.target)) return;
+  if (isClickThroughEnabled() && (e.button !== 2 || (e.pointerType && e.pointerType !== 'mouse'))) return;
   openMenu(e.clientX, e.clientY);
 });
 
@@ -672,6 +756,7 @@ const menuActions = {
   'menu-zen': () => settings.setOption('isImmersive', !state.isImmersive),
   'menu-edge-dock': () => settings.setOption('edgeDock', !state.edgeDock),
   'menu-lock': () => settings.setOption('isLocked', !state.isLocked),
+  'menu-disable-click-through': () => settings.setOption('lyricClickThrough', false),
   'menu-pin': () => settings.setOption('isPinned', !state.isPinned),
   'menu-palette': () => settings.cyclePalette(),
   'menu-layout': () => settings.applyLayout(settings.nextLayout()),
@@ -681,11 +766,21 @@ const menuActions = {
 
 contextMenu = createContextMenu({
   menu, trigger: card,
-  canOpen: () => !sheet.classList.contains('active'),
+  canOpen: modality => !sheet.classList.contains('active') && (!isClickThroughEnabled() || modality === 'pointer'),
   onBeforeOpen: prepareMenuWindow,
   onOpen: updateOverlayState,
   onClose: afterMenuClose,
-  onSelect: id => menuActions[id]?.()
+  onSelect: id => menuActions[id]?.(),
+  external: detachedMenu ? {
+    open: point => sendWindowCommand('open-menu', { ...point, presentation: menuPresentation() }),
+    close: () => sendWindowCommand('close-menu')
+  } : null
+});
+ipcRenderer.on('widget-menu-visibility', (_event, value) => {
+  if (value?.open === false) contextMenu?.closed(value.reason);
+});
+ipcRenderer.on('widget-menu-selected', (_event, id) => {
+  if (Object.prototype.hasOwnProperty.call(menuActions, id)) menuActions[id]();
 });
 
 const btnPosterAction = $('btn-poster-action');
@@ -697,6 +792,7 @@ if (btnPosterAction) {
 // 键盘快捷键
 // ==========================================================================
 window.addEventListener('keydown', (e) => {
+  if (isClickThroughEnabled()) return;
   if (e.target instanceof HTMLInputElement && e.key !== 'Escape') return;
   if (e.key === ' ' && e.target instanceof Element && e.target.closest('button, input, select, textarea')) return;
   const key = e.key.toLowerCase();
@@ -720,17 +816,27 @@ window.addEventListener('keydown', (e) => {
 });
 
 // ==========================================================================
-// 歌词布局平滑拖拽窗口 (因 no-drag 释放原生 contextmenu，由 JS 处理左键位移)
+// 普通内容与封面共用只移动位置的窗口拖拽逻辑；按钮和进度条仍由各自手势处理。
 // ==========================================================================
+let suppressContentClick = false;
+card.addEventListener('click', event => {
+  if (!suppressContentClick) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}, true);
 card.addEventListener('pointerdown', (e) => {
-  if (state.layout !== 'lyrics' || state.isLocked) return;
+  if (isClickThroughEnabled() || state.isLocked || state.circuitEditing || sheet.classList.contains('active') || contextMenu?.isOpen()) return;
   if (e.button !== 0 || !e.isPrimary) return;
-  if (e.target.closest('button, input, select, textarea, .grip, .sheet, .menu, .edge-peek-tab')) return;
+  // The cover owns its single/double clicks, but its pointer gesture still moves the window.
+  const control = e.target.closest(contentControls);
+  if (control && control !== cover) return;
   cancelWindowGesture?.();
   e.preventDefault();
   isWindowDragging = true;
   const pointerId = e.pointerId;
-  try { card.setPointerCapture(pointerId); } catch {}
+  // Keep the original target: click delegation must still distinguish content from controls.
+  const captureTarget = e.target;
+  try { captureTarget.setPointerCapture(pointerId); } catch {}
 
   const startMouseX = e.screenX;
   const startMouseY = e.screenY;
@@ -740,6 +846,7 @@ card.addEventListener('pointerdown', (e) => {
   let pendingPos = null;
   let lastPos = null;
   let isDragging = false;
+  let moveStarted = false;
   let finished = false;
 
   const flushMove = (save = false) => {
@@ -747,7 +854,8 @@ card.addEventListener('pointerdown', (e) => {
     const position = pendingPos || (save ? lastPos : null);
     if (!position) return;
     // Renderer viewport sizes can differ from native bounds at non-default zoom.
-    sendWindowCommand('move', { ...position, save });
+    sendWindowCommand('move', { ...position, save, begin: !moveStarted });
+    moveStarted = true;
     pendingPos = null;
   };
 
@@ -758,6 +866,9 @@ card.addEventListener('pointerdown', (e) => {
     const deltaY = ev.screenY - startMouseY;
     if (!isDragging && (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2)) {
       isDragging = true;
+      suppressContentClick = true;
+      clearTimeout(coverClickTimer);
+      coverClickTimer = null;
       card.classList.add('is-dragging');
     }
     if (isDragging) {
@@ -787,8 +898,9 @@ card.addEventListener('pointerdown', (e) => {
     window.removeEventListener('pointerup', onUp);
     window.removeEventListener('pointercancel', onUp);
     window.removeEventListener('blur', onUp);
-    card.removeEventListener('lostpointercapture', onUp);
-    if (card.hasPointerCapture(pointerId)) card.releasePointerCapture(pointerId);
+    captureTarget.removeEventListener('lostpointercapture', onUp);
+    if (captureTarget.hasPointerCapture(pointerId)) captureTarget.releasePointerCapture(pointerId);
+    if (isDragging) setTimeout(() => { suppressContentClick = false; }, 0);
     requestAnimationFrame(() => reconcileImmersive());
   };
 
@@ -797,7 +909,7 @@ card.addEventListener('pointerdown', (e) => {
   window.addEventListener('pointerup', onUp);
   window.addEventListener('pointercancel', onUp);
   window.addEventListener('blur', onUp);
-  card.addEventListener('lostpointercapture', onUp);
+  captureTarget.addEventListener('lostpointercapture', onUp);
 });
 
 // ==========================================================================
@@ -806,7 +918,9 @@ card.addEventListener('pointerdown', (e) => {
 function setupGrip(el, resizeX, resizeY) {
   if (!el) return;
   el.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0 || !e.isPrimary) return;
+    if (isClickThroughEnabled() || e.button !== 0 || !e.isPrimary) return;
+    // 纯歌词窗口矮，左右与下边缘容易抢走平移；只允许右下角缩放，与 CSS 的 pointer-events 规则一致。
+    if (state.layout === 'lyrics' && el.id !== 'grip-br') return;
     e.preventDefault();
     e.stopPropagation();
     cancelWindowGesture?.();
@@ -873,7 +987,7 @@ setupGrip($('grip-r'), true, false);
 setupGrip($('grip-b'), false, true);
 setupGrip($('grip-br'), true, true);
 
-window.addEventListener('resize', adaptiveLayout.schedule);
+window.addEventListener('resize', () => { motion.cancelSong(); adaptiveLayout.schedule(); });
 
 // 主进程返回按布局保存的窗口状态；旧版窗口位置会迁移给当前布局。
 ipcRenderer.on('widget-window-state', (event, snapshot) => {
@@ -909,6 +1023,7 @@ ipcRenderer.on('widget-visibility', (_event, phase) => {
   const visible = phase === 'visible';
   document.body.classList.toggle('widget-auto-hiding', !visible);
   if (!visible) {
+    cancelScrub?.();
     cancelWindowGesture?.();
     closeMenu();
     clearTimeout(hoverTimer);
@@ -927,6 +1042,9 @@ const releaseInteraction = () => {
   sendWindowCommand('interaction', { kind: 'pointer', active: false });
 };
 card.addEventListener('pointerdown', () => {
+  if (isClickThroughEnabled()) return;
+  lyrics.stopTransition();
+  motion.cancelSong();
   pointerInteraction = true;
   sendWindowCommand('interaction', { kind: 'pointer', active: true });
 }, true);
@@ -936,12 +1054,35 @@ document.addEventListener('lostpointercapture', releaseInteraction, true);
 window.addEventListener('pointermove', event => { if (event.buttons === 0) releaseInteraction(); });
 window.addEventListener('blur', releaseInteraction);
 window.addEventListener('keydown', event => {
-  if (event.key === 'Tab' && !card.classList.contains('has-overlay')) {
+  if (!isClickThroughEnabled() && event.key === 'Tab' && !card.classList.contains('has-overlay')) {
     state.keyboardWake = true;
     adaptiveLayout.refresh();
   }
 }, true);
+function syncClickThrough() {
+  const enabled = isClickThroughEnabled();
+  card.classList.toggle('is-click-through', enabled);
+  const disableItem = $('menu-disable-click-through');
+  disableItem.hidden = !enabled;
+  const label = interactionMessage('disableClickThrough', document.documentElement.lang);
+  $('menu-disable-click-through-text').textContent = label;
+  disableItem.dataset.label = label;
+  if (enabled) {
+    clearTimeout(hoverTimer);
+    hoverTimer = null;
+    isPointerInsideCard = false;
+    state.keyboardWake = false;
+    card.classList.remove('is-hovered');
+    tooltips.hideAll();
+  }
+  syncLyricToolbar();
+  if (lastClickThrough === enabled) return;
+  lastClickThrough = enabled;
+  sendWindowCommand('click-through', enabled);
+}
+syncConnectionUI();
 sendWindowCommand('renderer-ready');
+syncClickThrough();
 sendWindowCommand('auto-hide', state.autoHideWhenPaused);
 sendWindowCommand('song-announcement', state.songToast);
 sendWindowCommand('pin', state.isPinned);
@@ -949,6 +1090,9 @@ ipcRenderer.send('widget-request-window-state');
 ipcRenderer.send('widget-request-snapshot');
 if (!nativeBridge) settings.updateWindow({ layout: state.layout, bounds: { width: innerWidth, height: innerHeight } });
 window.addEventListener('pagehide', () => {
+  cancelScrub?.();
+  for (const type of silentInputEvents) window.removeEventListener(type, blockSilentInput, true);
+  sendWindowCommand('click-through', false);
   for (const kind of ['pointer', 'menu', 'editor']) sendWindowCommand('interaction', { kind, active: false });
   cancelWindowGesture?.();
   clearTimeout(wheelFeedbackTimer);
